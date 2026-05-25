@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: sc-mining-assistant
+Version: 0.1.0
+Summary: Manual Star Citizen mining calculator with event logging and dataset viewer.
+Requires-Python: >=3.11
+Requires-Dist: pydantic>=2
+Requires-Dist: PyYAML>=6
+Requires-Dist: pandas>=2
+Requires-Dist: streamlit>=1.30
+Requires-Dist: scikit-learn>=1.2
+Requires-Dist: joblib>=1.3
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"

@@ -7,10 +7,24 @@ import streamlit as st
 from sc_mining.domain.calculator import calculate
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules
 from sc_mining.dataset.exporter import build_dataset, export_dataset, get_dataset_export_summary
+from sc_mining.dataset.analytics import (
+    build_basic_analytics_report,
+    build_feature_signal_table,
+    build_formula_diagnostics,
+    build_formula_outcome_matrix,
+    build_outcome_numeric_summary,
+)
 from sc_mining.dataset.quality import (
     build_quality_report,
     distribution_to_dataframe,
     quality_issues_to_dataframe,
+)
+from sc_mining.dataset.synthetic import export_synthetic_dataset, synthetic_summary
+from sc_mining.ml.baseline import (
+    MIN_LABELED_ROWS_FOR_TRAINING,
+    check_training_readiness,
+    result_to_dict,
+    train_baseline_model,
 )
 from sc_mining.domain.models import (
     BeamState,
@@ -26,6 +40,11 @@ CONFIG_DIR = Path("configs")
 BUILDS_DIR = CONFIG_DIR / "builds"
 EVENTS_PATH = Path("data") / "sessions" / "manual_events.jsonl"
 DATASET_PATH = Path("data") / "datasets" / "mining_events.csv"
+SYNTHETIC_DATASET_PATH = Path("data") / "datasets" / "mining_events_synthetic.csv"
+MODEL_PATH = Path("models") / "mining_outcome_baseline.joblib"
+MODEL_REPORT_PATH = Path("reports") / "baseline_model_report.json"
+SYNTHETIC_MODEL_PATH = Path("models") / "mining_outcome_baseline_synthetic.joblib"
+SYNTHETIC_MODEL_REPORT_PATH = Path("reports") / "baseline_model_report_synthetic.json"
 
 OUTCOME_OPTIONS = {
     "unknown": "Unknown / not checked yet",
@@ -94,6 +113,245 @@ def render_outcome_form() -> OutcomeFeedback:
         comment=comment.strip(),
     )
 
+
+
+def render_basic_analytics_block(dataset: pd.DataFrame) -> None:
+    st.subheader("Basic analytics")
+    st.caption(
+        "Inspects labeled outcomes and highlights where the rule-based formula agrees or disagrees with real results."
+    )
+
+    report = build_basic_analytics_report(dataset)
+
+    if report["labeled_row_count"] == 0:
+        st.info(
+            "No labeled events yet. Add actual_outcome values other than unknown to enable analytics."
+        )
+        return
+
+    analytics_col1, analytics_col2, analytics_col3, analytics_col4, analytics_col5, analytics_col6 = st.columns(6)
+    analytics_col1.metric("Labeled", report["labeled_row_count"])
+    analytics_col2.metric("Good", report["good_count"])
+    analytics_col3.metric("Not good", report["not_good_count"])
+    analytics_col4.metric("Dangerous take", report["dangerous_take_count"])
+    analytics_col5.metric("Missed opportunity", report["missed_opportunity_count"])
+    analytics_col6.metric("Risky bad", report["risky_bad_count"])
+
+    matrix = build_formula_outcome_matrix(dataset)
+    diagnostics = build_formula_diagnostics(dataset)
+    feature_signal = build_feature_signal_table(dataset)
+    outcome_numeric_summary = build_outcome_numeric_summary(
+        dataset,
+        features=[
+            "mass",
+            "resistance",
+            "instability",
+            "distance",
+            "beam_power_sum",
+            "margin",
+            "risk_score",
+        ],
+    )
+
+    st.write("Formula verdict vs actual outcome")
+    if matrix.empty:
+        st.info("No formula/outcome pairs available.")
+    else:
+        matrix_pivot = matrix.pivot_table(
+            index="verdict",
+            columns="actual_outcome",
+            values="count",
+            fill_value=0,
+            aggfunc="sum",
+        )
+        st.dataframe(matrix_pivot, width="stretch")
+
+    st.write("Feature signal: good vs not-good outcomes")
+    if feature_signal.empty:
+        st.info("Not enough labeled data to compare feature signals.")
+    else:
+        st.dataframe(feature_signal, width="stretch")
+
+    st.write("Numeric summary by actual outcome")
+    if outcome_numeric_summary.empty:
+        st.info("No numeric outcome summary available.")
+    else:
+        st.dataframe(outcome_numeric_summary, width="stretch")
+
+    st.write("Formula diagnostics")
+    if diagnostics.empty:
+        st.info("No diagnostics available.")
+    else:
+        selected_labels = st.multiselect(
+            "Diagnostic labels",
+            options=sorted(diagnostics["analytics_label"].unique()),
+            default=sorted(diagnostics["analytics_label"].unique()),
+        )
+        diagnostics_view = diagnostics
+        if selected_labels:
+            diagnostics_view = diagnostics_view[diagnostics_view["analytics_label"].isin(selected_labels)]
+        st.dataframe(diagnostics_view, width="stretch")
+
+
+def render_ml_baseline_block(
+    dataset: pd.DataFrame,
+    title: str = "Baseline ML model",
+    model_path: Path = MODEL_PATH,
+    report_path: Path = MODEL_REPORT_PATH,
+    key_prefix: str = "manual",
+    default_min_labeled_rows: int = MIN_LABELED_ROWS_FOR_TRAINING,
+) -> None:
+    st.subheader(title)
+    st.caption(
+        "Trains a first weak supervised model on labeled events. "
+        "Target: good outcome vs not-good outcome. Use this as a baseline, not as final truth."
+    )
+
+    min_labeled_rows = st.number_input(
+        "Minimum labeled rows for training",
+        min_value=4,
+        max_value=1000,
+        value=default_min_labeled_rows,
+        step=1,
+        help="Keep 30+ for a meaningful weak baseline. Lower values are only for smoke testing the pipeline.",
+        key=f"{key_prefix}_min_labeled_rows",
+    )
+
+    readiness = check_training_readiness(
+        dataset,
+        min_labeled_rows=int(min_labeled_rows),
+    )
+
+    ml_col1, ml_col2, ml_col3 = st.columns(3)
+    ml_col1.metric("Ready", "YES" if readiness.ready else "NO")
+    ml_col2.metric("Labeled rows", readiness.labeled_rows)
+    ml_col3.metric("Target classes", len(readiness.class_distribution))
+
+    st.write(f"Reason: {readiness.reason}")
+
+    if readiness.class_distribution:
+        st.write("Actual outcome class distribution")
+        st.dataframe(
+            distribution_to_dataframe(
+                readiness.class_distribution,
+                "actual_outcome",
+            ),
+            width="stretch",
+        )
+
+    st.write(f"Model output: `{model_path}`")
+    st.write(f"Report output: `{report_path}`")
+
+    train_clicked = st.button(
+        "Train baseline model",
+        disabled=not readiness.ready,
+        key=f"{key_prefix}_train_baseline_model",
+    )
+
+    if train_clicked:
+        try:
+            training_result = train_baseline_model(
+                dataset=dataset,
+                model_path=model_path,
+                report_path=report_path,
+                min_labeled_rows=int(min_labeled_rows),
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+
+        st.success(
+            f"Trained {training_result.model_version}: "
+            f"accuracy={training_result.accuracy}, rows_used={training_result.rows_used}"
+        )
+        st.json(result_to_dict(training_result))
+
+    if report_path.exists():
+        with st.expander("Last baseline report", expanded=False):
+            st.json(report_path.read_text(encoding="utf-8"))
+
+
+def render_synthetic_dataset_block() -> pd.DataFrame:
+    st.subheader("Synthetic smoke-test dataset")
+    st.caption(
+        "Generates labeled synthetic rows for validating the analytics/training pipeline. "
+        "Do not treat synthetic metrics as real gameplay model quality."
+    )
+
+    synth_col1, synth_col2, synth_col3, synth_col4 = st.columns([1, 1, 1, 2])
+
+    with synth_col1:
+        row_count = st.number_input(
+            "Synthetic rows",
+            min_value=10,
+            max_value=5000,
+            value=100,
+            step=10,
+            key="synthetic_row_count",
+        )
+
+    with synth_col2:
+        seed = st.number_input(
+            "Seed",
+            min_value=1,
+            max_value=999999,
+            value=42,
+            step=1,
+            key="synthetic_seed",
+        )
+
+    with synth_col3:
+        good_ratio = st.slider(
+            "Good ratio",
+            min_value=0.1,
+            max_value=0.9,
+            value=0.5,
+            step=0.05,
+            key="synthetic_good_ratio",
+        )
+
+    with synth_col4:
+        st.write(f"Output: `{SYNTHETIC_DATASET_PATH}`")
+
+    generate_clicked = st.button("Generate synthetic CSV", key="generate_synthetic_csv")
+
+    if generate_clicked:
+        synthetic_dataset = export_synthetic_dataset(
+            output_path=SYNTHETIC_DATASET_PATH,
+            row_count=int(row_count),
+            seed=int(seed),
+            good_ratio=float(good_ratio),
+        )
+        st.success(
+            f"Generated {len(synthetic_dataset)} synthetic rows at {SYNTHETIC_DATASET_PATH}"
+        )
+        st.json(synthetic_summary(synthetic_dataset))
+
+    if not SYNTHETIC_DATASET_PATH.exists():
+        st.info("No synthetic dataset yet. Generate it to smoke-test training without real labels.")
+        return pd.DataFrame()
+
+    synthetic_dataset = pd.read_csv(SYNTHETIC_DATASET_PATH)
+    st.warning(
+        "Synthetic data is only for pipeline smoke tests. Do not merge it into the real manual dataset."
+    )
+
+    synth_summary = synthetic_summary(synthetic_dataset)
+    synth_summary_col1, synth_summary_col2, synth_summary_col3 = st.columns(3)
+    synth_summary_col1.metric("Rows", synth_summary["row_count"])
+    synth_summary_col2.metric("Labeled", synth_summary["labeled_count"])
+    synth_summary_col3.metric("Unlabeled", synth_summary["unlabeled_count"])
+
+    with st.expander("Synthetic outcome distribution", expanded=False):
+        st.dataframe(
+            distribution_to_dataframe(
+                synth_summary["actual_outcome_distribution"],
+                "actual_outcome",
+            ),
+            width="stretch",
+        )
+
+    return synthetic_dataset
 
 def render_calculator_tab(heads, modules, build, session_id: str) -> None:
     st.subheader("Rock parameters")
@@ -442,6 +700,22 @@ def render_saved_events_tab() -> None:
             ),
             width="stretch",
         )
+
+    synthetic_dataset = render_synthetic_dataset_block()
+
+    render_basic_analytics_block(quality_dataset)
+    render_ml_baseline_block(quality_dataset)
+
+    if not synthetic_dataset.empty:
+        with st.expander("Train on synthetic dataset for smoke test", expanded=False):
+            render_ml_baseline_block(
+                synthetic_dataset,
+                title="Synthetic baseline smoke test",
+                model_path=SYNTHETIC_MODEL_PATH,
+                report_path=SYNTHETIC_MODEL_REPORT_PATH,
+                key_prefix="synthetic",
+                default_min_labeled_rows=30,
+            )
 
 
 def main() -> None:
