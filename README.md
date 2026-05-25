@@ -15,6 +15,8 @@ Current scope:
 - basic analytics dashboard for formula-vs-outcome inspection
 - baseline ML training for good vs not-good outcome
 - formula-vs-ML comparison for current calculator input and saved datasets
+- active model selection for default inference
+- lightweight training run tracking
 - Streamlit UI with:
   - calculator tab
   - saved events tab
@@ -28,6 +30,9 @@ Current scope:
   - basic analytics dashboard
   - baseline ML training block
   - formula-vs-ML comparison block
+  - model artifact separation block
+  - active model selection block
+  - training run history block
 
 ## Setup
 
@@ -46,7 +51,7 @@ python -m pytest -q
 Expected:
 
 ```text
-49 passed
+75 passed
 ```
 
 ## Run UI
@@ -136,6 +141,9 @@ src/sc_mining/
   ml/
     baseline.py
     comparison.py
+    registry.py
+    tracking.py
+    active_model.py
   ui/
     streamlit_app.py
 
@@ -197,8 +205,14 @@ any other labeled outcome -> not_good
 Model artifacts are written to:
 
 ```text
-models/mining_outcome_baseline.joblib
-reports/baseline_model_report.json
+models/mining_outcome_baseline_manual.joblib
+reports/baseline_model_report_manual.json
+
+Synthetic smoke-test artifacts are separate:
+
+```text
+models/mining_outcome_baseline_synthetic.joblib
+reports/baseline_model_report_synthetic.json
 ```
 
 Training requires:
@@ -257,7 +271,8 @@ actual_outcome coverage metrics
 Model sources:
 
 ```text
-manual_baseline        model trained on manually collected/labeled events
+manual_real_data       model trained on manually collected/labeled gameplay events
+legacy_manual_baseline older manual artifact path from previous blocks
 synthetic_smoke_test   model trained on generated test data only
 unknown                source could not be inferred
 ```
@@ -303,3 +318,87 @@ is_labeled   = true/false
 ```
 
 MLOps purpose: this turns raw logged calculator events into supervised training examples. Without this step, most rows stay `actual_outcome = unknown` and cannot be used to train a real baseline model.
+
+
+## Real model training separation
+
+Block 12 separates real/manual model artifacts from synthetic smoke-test artifacts.
+
+Primary paths:
+
+```text
+models/mining_outcome_baseline_manual.joblib
+reports/baseline_model_report_manual.json
+```
+
+Synthetic smoke-test paths remain separate:
+
+```text
+models/mining_outcome_baseline_synthetic.joblib
+reports/baseline_model_report_synthetic.json
+```
+
+New module:
+
+```text
+src/sc_mining/ml/registry.py
+```
+
+The registry records every known model artifact path, its `model_source`, and whether it is allowed as a gameplay-review candidate.
+
+MLOps purpose: this prevents a synthetic model from being mistaken for a real model. Synthetic artifacts validate the training/inference pipeline; manual real-data artifacts are the only candidates for gameplay review after enough real labeled events are collected.
+
+## Training run tracking
+
+Block 13 adds a lightweight training-run history.
+
+New module:
+
+```text
+src/sc_mining/ml/tracking.py
+```
+
+Run log path:
+
+```text
+reports/training_runs.jsonl
+```
+
+Every UI training action appends one JSONL record with:
+
+```text
+run_id
+created_at
+model_source
+model_version
+model_path
+report_path
+rows_used
+train_rows
+test_rows
+accuracy
+target_distribution
+feature_columns
+```
+
+Saved events UI now includes:
+
+```text
+Training run history
+```
+
+MLOps purpose: every model artifact should have an auditable training run. This is a small local replacement for experiment tracking systems such as MLflow: it records what was trained, when it was trained, on how many rows, where the model was saved, and which report belongs to it.
+
+
+## Active model selection
+
+Block 14 adds a small active-model pointer:
+
+```text
+models/active_model.json
+```
+
+It does not train a model. It records which existing model artifact should be used by default in Calculator and dataset inference.
+
+This is an MLOps control step: model artifacts can exist side by side, but inference should use an explicitly selected active model. Synthetic smoke-test models remain clearly marked and should not be treated as gameplay advice.
+

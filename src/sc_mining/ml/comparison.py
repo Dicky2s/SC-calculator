@@ -13,11 +13,17 @@ from sc_mining.ml.baseline import (
     load_baseline_model,
     predict_good_probability,
 )
+from sc_mining.ml.registry import (
+    MODEL_SOURCE_LEGACY_MANUAL,
+    MODEL_SOURCE_MANUAL_REAL,
+    MODEL_SOURCE_SYNTHETIC,
+    MODEL_SOURCE_UNKNOWN,
+    infer_model_source,
+    model_source_warning,
+)
 
 
-MODEL_SOURCE_MANUAL = "manual_baseline"
-MODEL_SOURCE_SYNTHETIC = "synthetic_smoke_test"
-MODEL_SOURCE_UNKNOWN = "unknown"
+MODEL_SOURCE_MANUAL = MODEL_SOURCE_MANUAL_REAL
 
 COMPARISON_EXPORT_COLUMNS = [
     "event_id",
@@ -56,31 +62,6 @@ class FormulaMlComparison:
     confidence_band: str | None
     agreement_label: str | None
     recommendation: str | None
-
-
-def infer_model_source(model_path: str | Path | None) -> str:
-    """Infer whether a model artifact is a real/manual baseline or a synthetic smoke-test artifact."""
-
-    if model_path is None:
-        return MODEL_SOURCE_UNKNOWN
-
-    normalized = str(model_path).replace("\\", "/").lower()
-    if "synthetic" in normalized:
-        return MODEL_SOURCE_SYNTHETIC
-    if normalized.endswith(".joblib"):
-        return MODEL_SOURCE_MANUAL
-    return MODEL_SOURCE_UNKNOWN
-
-
-def model_source_warning(model_source: str) -> str | None:
-    if model_source == MODEL_SOURCE_SYNTHETIC:
-        return (
-            "Synthetic smoke-test model. It validates the pipeline, "
-            "not real gameplay decision quality."
-        )
-    if model_source == MODEL_SOURCE_UNKNOWN:
-        return "Unknown model source. Treat predictions as inspection output only."
-    return None
 
 
 def _sum_beam_power_percent(calc_input: CalculationInput) -> float:

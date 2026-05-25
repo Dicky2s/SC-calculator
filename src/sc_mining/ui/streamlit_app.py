@@ -37,6 +37,33 @@ from sc_mining.ml.comparison import (
     infer_model_source,
     model_source_warning,
 )
+from sc_mining.ml.registry import (
+    LEGACY_MANUAL_MODEL_PATH,
+    LEGACY_MANUAL_MODEL_REPORT_PATH,
+    MANUAL_MODEL_PATH,
+    MANUAL_MODEL_REPORT_PATH,
+    MODEL_SOURCE_MANUAL_REAL,
+    MODEL_SOURCE_SYNTHETIC,
+    SYNTHETIC_MODEL_PATH as REGISTRY_SYNTHETIC_MODEL_PATH,
+    SYNTHETIC_MODEL_REPORT_PATH as REGISTRY_SYNTHETIC_MODEL_REPORT_PATH,
+    default_model_artifact_specs,
+    existing_model_artifacts,
+    spec_to_dict,
+)
+
+from sc_mining.ml.tracking import (
+    TRAINING_RUNS_PATH,
+    append_training_run,
+    load_training_runs,
+    summarize_training_runs,
+)
+from sc_mining.ml.active_model import (
+    ACTIVE_MODEL_CONFIG_PATH,
+    build_active_model_status,
+    clear_active_model_config,
+    read_active_model_config,
+    write_active_model_config,
+)
 from sc_mining.domain.models import (
     BeamState,
     CalculationInput,
@@ -53,10 +80,12 @@ BUILDS_DIR = CONFIG_DIR / "builds"
 EVENTS_PATH = Path("data") / "sessions" / "manual_events.jsonl"
 DATASET_PATH = Path("data") / "datasets" / "mining_events.csv"
 SYNTHETIC_DATASET_PATH = Path("data") / "datasets" / "mining_events_synthetic.csv"
-MODEL_PATH = Path("models") / "mining_outcome_baseline.joblib"
-MODEL_REPORT_PATH = Path("reports") / "baseline_model_report.json"
-SYNTHETIC_MODEL_PATH = Path("models") / "mining_outcome_baseline_synthetic.joblib"
-SYNTHETIC_MODEL_REPORT_PATH = Path("reports") / "baseline_model_report_synthetic.json"
+MODEL_PATH = MANUAL_MODEL_PATH
+MODEL_REPORT_PATH = MANUAL_MODEL_REPORT_PATH
+LEGACY_MODEL_PATH = LEGACY_MANUAL_MODEL_PATH
+LEGACY_MODEL_REPORT_PATH = LEGACY_MANUAL_MODEL_REPORT_PATH
+SYNTHETIC_MODEL_PATH = REGISTRY_SYNTHETIC_MODEL_PATH
+SYNTHETIC_MODEL_REPORT_PATH = REGISTRY_SYNTHETIC_MODEL_REPORT_PATH
 
 OUTCOME_OPTIONS = {
     "unknown": "Unknown / not checked yet",
@@ -330,13 +359,22 @@ def render_ml_baseline_block(
     report_path: Path = MODEL_REPORT_PATH,
     key_prefix: str = "manual",
     default_min_labeled_rows: int = MIN_LABELED_ROWS_FOR_TRAINING,
-    model_source: str = "manual_baseline",
+    model_source: str = MODEL_SOURCE_MANUAL_REAL,
 ) -> None:
     st.subheader(title)
     st.caption(
         "Trains a first weak supervised model on labeled events. "
         "Target: good outcome vs not-good outcome. Use this as a baseline, not as final truth."
     )
+
+    st.write(f"Model source: `{model_source}`")
+    source_warning = model_source_warning(model_source)
+    if source_warning:
+        st.warning(source_warning)
+    elif model_source == MODEL_SOURCE_MANUAL_REAL:
+        st.info(
+            "Manual real-data model path. Use this for gameplay review only after enough real labeled events are collected."
+        )
 
     min_labeled_rows = st.number_input(
         "Minimum labeled rows for training",
@@ -396,6 +434,13 @@ def render_ml_baseline_block(
             f"Trained {training_result.model_version}: "
             f"accuracy={training_result.accuracy}, rows_used={training_result.rows_used}"
         )
+        run_record = append_training_run(
+            training_result=training_result,
+            path=TRAINING_RUNS_PATH,
+            notes=f"UI training run: {title}",
+        )
+        st.write(f"Training run logged: `{run_record.run_id}`")
+        st.write(f"Run history: `{TRAINING_RUNS_PATH}`")
         st.json(result_to_dict(training_result))
 
     if report_path.exists():
@@ -406,12 +451,177 @@ def render_ml_baseline_block(
 
 def available_model_paths() -> dict[str, Path]:
     options: dict[str, Path] = {}
-    if MODEL_PATH.exists():
-        options["Manual baseline model"] = MODEL_PATH
-    if SYNTHETIC_MODEL_PATH.exists():
-        options["Synthetic smoke-test model"] = SYNTHETIC_MODEL_PATH
+    for spec in existing_model_artifacts():
+        options[f"{spec.label} [{spec.model_source}]"] = spec.model_path
     return options
 
+
+def active_model_select_index(options: dict[str, Path]) -> int:
+    active = read_active_model_config(ACTIVE_MODEL_CONFIG_PATH)
+    if active is None:
+        return 0
+
+    active_path = Path(active.model_path)
+    for index, model_path in enumerate(options.values()):
+        if Path(model_path) == active_path:
+            return index
+    return 0
+
+
+def render_model_artifact_separation_block() -> None:
+    st.subheader("Model artifact separation")
+    st.caption(
+        "Keeps real/manual and synthetic model artifacts separate. "
+        "Synthetic models are for smoke tests only; manual real-data models are the only candidates for gameplay review."
+    )
+
+    rows = []
+    for spec in default_model_artifact_specs():
+        payload = spec_to_dict(spec)
+        payload["exists"] = spec.model_path.exists()
+        payload["report_exists"] = spec.report_path.exists()
+        rows.append(payload)
+
+    registry_df = pd.DataFrame(rows)
+    st.dataframe(registry_df, width="stretch")
+
+    if SYNTHETIC_MODEL_PATH.exists() and not MODEL_PATH.exists():
+        st.warning(
+            "Only the synthetic smoke-test model exists. This validates the pipeline but should not be used as gameplay advice."
+        )
+    elif MODEL_PATH.exists():
+        st.success("Manual real-data model artifact exists. Check the report quality before trusting it.")
+    else:
+        st.info("No manual real-data model yet. Label real outcomes, then train the manual baseline.")
+
+
+
+def render_active_model_selection_block() -> None:
+    st.subheader("Active model selection")
+    st.caption(
+        "Selects which existing model artifact is used by default for Calculator and dataset inference. "
+        "This writes a small registry pointer, not a new model."
+    )
+
+    status = build_active_model_status(ACTIVE_MODEL_CONFIG_PATH)
+    active_payload = status.get("active_model")
+
+    active_col1, active_col2, active_col3, active_col4 = st.columns(4)
+    active_col1.metric("Configured", "YES" if status["configured"] else "NO")
+    active_col2.metric("Valid", "YES" if status["valid"] else "NO")
+    active_col3.metric("Available models", status["available_count"])
+    active_col4.metric(
+        "Active source",
+        active_payload["model_source"] if active_payload else "—",
+    )
+
+    st.write(f"Active config: `{ACTIVE_MODEL_CONFIG_PATH}`")
+    st.write(f"Reason: {status['reason']}")
+
+    if active_payload:
+        if active_payload.get("warning"):
+            st.warning(active_payload["warning"])
+        elif active_payload.get("safe_for_gameplay_review"):
+            st.success("Active model is a manual real-data artifact. Review report quality before using its output.")
+
+        with st.expander("Active model config", expanded=False):
+            st.json(active_payload)
+
+    specs = existing_model_artifacts()
+    if not specs:
+        st.info("No existing model artifacts. Train manual or synthetic baseline first.")
+        return
+
+    option_labels = [f"{spec.label} [{spec.model_source}]" for spec in specs]
+    label_to_spec = dict(zip(option_labels, specs))
+
+    selected_label = st.selectbox(
+        "Model artifact to activate",
+        options=option_labels,
+        key="active_model_selector",
+    )
+    selected_spec = label_to_spec[selected_label]
+
+    selected_warning = model_source_warning(selected_spec.model_source)
+    if selected_warning:
+        st.warning(selected_warning)
+
+    action_col1, action_col2 = st.columns([1, 3])
+    with action_col1:
+        set_clicked = st.button("Set active model", key="set_active_model")
+    with action_col2:
+        clear_clicked = st.button(
+            "Clear active model",
+            key="clear_active_model",
+            disabled=not status["configured"],
+        )
+
+    if set_clicked:
+        selection = write_active_model_config(selected_spec, ACTIVE_MODEL_CONFIG_PATH)
+        st.success(f"Active model set: {selection.label} [{selection.model_source}]")
+        st.rerun()
+
+    if clear_clicked:
+        clear_active_model_config(ACTIVE_MODEL_CONFIG_PATH)
+        st.success("Active model selection cleared.")
+        st.rerun()
+
+
+def render_training_run_history_block() -> None:
+    st.subheader("Training run history")
+    st.caption(
+        "Lightweight experiment tracking. Every UI training action appends one JSONL run record."
+    )
+
+    runs = load_training_runs(TRAINING_RUNS_PATH)
+    summary = summarize_training_runs(runs)
+
+    history_col1, history_col2, history_col3, history_col4 = st.columns(4)
+    history_col1.metric("Runs", summary["run_count"])
+    history_col2.metric("Sources", summary["model_source_count"])
+    history_col3.metric("Best accuracy", summary["best_accuracy"] if summary["best_accuracy"] is not None else "—")
+    history_col4.metric("Latest source", summary["latest_model_source"] or "—")
+
+    st.write(f"Run log: `{TRAINING_RUNS_PATH}`")
+
+    if runs.empty:
+        st.info("No training runs logged yet. Train a manual or synthetic baseline model first.")
+        return
+
+    view = runs.sort_values("created_at", ascending=False, na_position="last")
+    source_values = sorted(view["model_source"].dropna().astype(str).unique())
+    selected_sources = st.multiselect(
+        "Model sources",
+        options=source_values,
+        default=source_values,
+        key="training_history_sources",
+    )
+
+    if selected_sources:
+        view = view[view["model_source"].astype(str).isin(selected_sources)]
+
+    display_columns = [
+        "created_at",
+        "model_source",
+        "model_version",
+        "rows_used",
+        "train_rows",
+        "test_rows",
+        "accuracy",
+        "model_path",
+        "report_path",
+        "run_id",
+        "notes",
+    ]
+    st.dataframe(view[display_columns], width="stretch")
+
+    csv_payload = view[display_columns].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download training runs CSV",
+        data=csv_payload,
+        file_name="training_runs.csv",
+        mime="text/csv",
+    )
 
 def render_calculator_ml_comparison(calc_input: CalculationInput, result) -> None:
     st.subheader("Formula vs ML comparison")
@@ -430,6 +640,7 @@ def render_calculator_ml_comparison(calc_input: CalculationInput, result) -> Non
     selected_label = st.selectbox(
         "Model for comparison",
         options=list(model_options.keys()),
+        index=active_model_select_index(model_options),
         key="calculator_ml_model_selector",
     )
     selected_path = model_options[selected_label]
@@ -479,6 +690,7 @@ def render_dataset_ml_comparison_block(dataset: pd.DataFrame) -> None:
     selected_label = st.selectbox(
         "Model for dataset comparison",
         options=list(model_options.keys()),
+        index=active_model_select_index(model_options),
         key="dataset_ml_model_selector",
     )
     selected_path = model_options[selected_label]
@@ -980,7 +1192,18 @@ def render_saved_events_tab() -> None:
     synthetic_dataset = render_synthetic_dataset_block()
 
     render_basic_analytics_block(quality_dataset)
-    render_ml_baseline_block(quality_dataset)
+    render_model_artifact_separation_block()
+    render_active_model_selection_block()
+    render_training_run_history_block()
+    render_ml_baseline_block(
+        quality_dataset,
+        title="Manual real-data baseline model",
+        model_path=MODEL_PATH,
+        report_path=MODEL_REPORT_PATH,
+        key_prefix="manual_real",
+        default_min_labeled_rows=MIN_LABELED_ROWS_FOR_TRAINING,
+        model_source=MODEL_SOURCE_MANUAL_REAL,
+    )
     render_dataset_ml_comparison_block(quality_dataset)
 
     if not synthetic_dataset.empty:
@@ -992,7 +1215,7 @@ def render_saved_events_tab() -> None:
                 report_path=SYNTHETIC_MODEL_REPORT_PATH,
                 key_prefix="synthetic",
                 default_min_labeled_rows=30,
-                model_source="synthetic_smoke_test",
+                model_source=MODEL_SOURCE_SYNTHETIC,
             )
 
 

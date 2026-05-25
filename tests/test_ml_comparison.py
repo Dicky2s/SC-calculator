@@ -10,6 +10,7 @@ from sc_mining.domain.models import (
     RockInput,
 )
 from sc_mining.ml.baseline import load_baseline_model, train_baseline_model
+from sc_mining.ml.registry import MODEL_SOURCE_LEGACY_MANUAL
 from sc_mining.ml.comparison import (
     MODEL_SOURCE_MANUAL,
     MODEL_SOURCE_SYNTHETIC,
@@ -182,10 +183,12 @@ def test_apply_formula_ml_comparison_to_dataset_adds_columns(tmp_path):
     assert set(compared["ml_prediction"]).issubset({"good", "not_good"})
 
 
-def test_infer_model_source_detects_synthetic_artifacts():
-    assert infer_model_source("models/mining_outcome_baseline.joblib") == MODEL_SOURCE_MANUAL
+def test_infer_model_source_detects_separated_artifacts():
+    assert infer_model_source("models/mining_outcome_baseline_manual.joblib") == MODEL_SOURCE_MANUAL
+    assert infer_model_source("models/mining_outcome_baseline.joblib") == MODEL_SOURCE_LEGACY_MANUAL
     assert infer_model_source("models/mining_outcome_baseline_synthetic.joblib") == MODEL_SOURCE_SYNTHETIC
     assert "Synthetic" in model_source_warning(MODEL_SOURCE_SYNTHETIC)
+    assert "Legacy" in model_source_warning(MODEL_SOURCE_LEGACY_MANUAL)
 
 
 def test_cleanup_export_dataframe_drops_unnamed_index_columns():
