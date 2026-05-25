@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -6,10 +7,12 @@ import streamlit as st
 from sc_mining.domain.calculator import calculate
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules
 from sc_mining.domain.models import BeamState, CalculationInput, RockInput
+from sc_mining.storage.event_logger import save_calculation_event
 
 
 CONFIG_DIR = Path("configs")
 BUILDS_DIR = CONFIG_DIR / "builds"
+EVENTS_PATH = Path("data") / "sessions" / "manual_events.jsonl"
 
 
 def list_build_files() -> list[Path]:
@@ -28,6 +31,10 @@ def format_verdict(verdict: str) -> str:
     return verdict.upper()
 
 
+def default_session_id() -> str:
+    return "manual_" + datetime.now().strftime("%Y_%m_%d")
+
+
 def main() -> None:
     st.set_page_config(
         page_title="SC Mining Assistant",
@@ -35,7 +42,7 @@ def main() -> None:
     )
 
     st.title("SC Mining Assistant")
-    st.caption("Manual baseline calculator")
+    st.caption("Manual baseline calculator + manual event logger")
 
     heads = load_heads(CONFIG_DIR / "heads.yaml")
     modules = load_modules(CONFIG_DIR / "modules.yaml")
@@ -44,6 +51,13 @@ def main() -> None:
     if not build_files:
         st.error("No build YAML files found in configs/builds")
         return
+
+    st.sidebar.subheader("Session")
+
+    session_id = st.sidebar.text_input(
+        "Session ID",
+        value=default_session_id(),
+    )
 
     build_file = st.sidebar.selectbox(
         "Build profile",
@@ -152,9 +166,31 @@ def main() -> None:
     metric_col4.metric("Margin", result.margin)
     metric_col5.metric("Risk", result.risk_score)
 
+    st.subheader("Save event")
+
+    col_save, col_path = st.columns([1, 3])
+
+    with col_save:
+        save_clicked = st.button("Save event", type="primary")
+
+    with col_path:
+        st.write(f"Output: `{EVENTS_PATH}`")
+
+    if save_clicked:
+        event = save_calculation_event(
+            path=EVENTS_PATH,
+            session_id=session_id,
+            calc_input=calc_input,
+            result=result,
+            source="manual_ui",
+        )
+
+        st.success(f"Saved event: {event['event_id']}")
+
     st.subheader("Details")
 
     rows = [
+        {"metric": "session_id", "value": str(session_id)},
         {"metric": "build_id", "value": str(build.build_id)},
         {"metric": "ship_type", "value": str(build.ship_type)},
         {"metric": "required_power", "value": str(result.required_power)},
