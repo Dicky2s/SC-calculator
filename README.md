@@ -157,6 +157,17 @@ tests/
   test_ml_baseline.py
 ```
 
+## Build preset capture
+
+The calculator supports multiple ship/loadout presets from `configs/builds/*.yaml`.
+Use the sidebar controls:
+
+1. `Ship`
+2. `Build profile`
+
+to select Prospector, MOLE, or Golem presets before saving real mining events.
+The selected `build_id` and `ship_type` are stored in the event log and exported dataset.
+
 ## Next planned blocks
 
 1. Collect real labeled events.
@@ -552,3 +563,33 @@ Expected tests:
 ```text
 98 passed
 ```
+
+
+## Block 19 — Golem + resource/yield capture
+
+Adds a dedicated General calculator page, run context fields for duo data collection, resource/yield fields for future profit analytics, and a complete known ship mining module config. See `docs/BLOCK19_GOLEM_RESOURCE_CAPTURE.md`.
+
+## Block 22 — Distance and 20% beam floor calibration
+
+- Beam power now starts at 20% in the UI and data model.
+- Effective power now changes with distance using a calibration heuristic.
+- Close range can create overpower risk; longer range can create `need_more_power`.
+- Calculator notes show `Distance efficiency` for manual debugging.
+
+This keeps real capture data closer to gameplay behavior before training real models.
+
+
+## Block 23 additions
+
+- Multi-resource capture table for mixed rocks.
+- Separate optional refinery/future-yield block.
+- Power/distance helper that scans candidate distance and laser power pairs for current rock/build.
+
+These additions are meant to improve real gameplay data collection before training a useful model.
+
+
+## Block 24 — Refinery outcome update
+
+Added a **Refinery outcome queue** in Saved events. This lets you save mining events quickly, then later update the same event with refinery/sale results after the refinery job completes.
+
+New output columns include `refined_resources_json`, `refined_resource_names`, `total_refined_scu_actual`, and `total_resource_sell_value_auec`.

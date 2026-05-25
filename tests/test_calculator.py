@@ -111,3 +111,55 @@ def test_unknown_beam_slot_should_raise_error():
         assert "Unknown beam slot" in str(error)
     else:
         raise AssertionError("Expected ValueError for unknown beam slot")
+
+def test_distance_changes_delivered_power_at_minimum_beam_power():
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
+
+    rock_near = RockInput(
+        mass=13040,
+        resistance=0.0,
+        instability=0.12,
+        distance=15,
+    )
+    rock_far = RockInput(
+        mass=13040,
+        resistance=0.0,
+        instability=0.12,
+        distance=45,
+    )
+
+    near_result = calculate(
+        CalculationInput(
+            rock=rock_near,
+            build=build,
+            beams=[BeamState(slot="main", power_percent=20)],
+        ),
+        heads=heads,
+        modules=modules,
+    )
+    far_result = calculate(
+        CalculationInput(
+            rock=rock_far,
+            build=build,
+            beams=[BeamState(slot="main", power_percent=20)],
+        ),
+        heads=heads,
+        modules=modules,
+    )
+
+    assert near_result.effective_power > near_result.required_power
+    assert near_result.verdict in {"take", "risky", "skip"}
+    assert far_result.effective_power < far_result.required_power
+    assert far_result.verdict == "need_more_power"
+    assert any("Distance efficiency" in note for note in near_result.notes)
+
+
+def test_beam_power_below_twenty_is_rejected():
+    try:
+        BeamState(slot="main", power_percent=19)
+    except Exception as error:
+        assert "greater than or equal to 20" in str(error)
+    else:
+        raise AssertionError("Expected validation error for beam power below 20%")

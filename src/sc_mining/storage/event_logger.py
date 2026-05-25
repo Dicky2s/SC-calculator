@@ -8,6 +8,10 @@ from sc_mining.domain.models import (
     CalculationInput,
     CalculationResult,
     OutcomeFeedback,
+    ResourceYieldFeedback,
+    RefineryFeedback,
+    CalibrationFeedback,
+    RunContext,
 )
 
 
@@ -65,8 +69,16 @@ def build_calculation_event(
     source: str = "manual_ui",
     outcome: OutcomeFeedback | None = None,
     ml_prediction_snapshot: dict | None = None,
+    resource_yield: ResourceYieldFeedback | None = None,
+    refinery: RefineryFeedback | None = None,
+    calibration: CalibrationFeedback | None = None,
+    run_context: RunContext | None = None,
 ) -> dict:
     outcome_feedback = outcome or OutcomeFeedback()
+    resource_feedback = resource_yield or ResourceYieldFeedback()
+    refinery_feedback = refinery or RefineryFeedback()
+    calibration_feedback = calibration or CalibrationFeedback()
+    context = run_context or RunContext()
     event_timestamp = utc_now_iso()
     is_labeled = outcome_feedback.actual_outcome != "unknown"
 
@@ -77,6 +89,7 @@ def build_calculation_event(
         "session_id": session_id,
         "timestamp": event_timestamp,
         "source": source,
+        "run_context": model_to_dict(context),
         "build": {
             "build_id": calc_input.build.build_id,
             "ship_type": calc_input.build.ship_type,
@@ -87,6 +100,9 @@ def build_calculation_event(
         "result": model_to_dict(result),
         "ml_prediction": ml_prediction,
         "outcome": model_to_dict(outcome_feedback),
+        "resource_yield": model_to_dict(resource_feedback),
+        "refinery": model_to_dict(refinery_feedback),
+        "calibration": model_to_dict(calibration_feedback),
         "labeling": {
             "label_source": "initial_save_ui" if is_labeled else "",
             "labeled_at": event_timestamp if is_labeled else "",
@@ -111,6 +127,10 @@ def save_calculation_event(
     source: str = "manual_ui",
     outcome: OutcomeFeedback | None = None,
     ml_prediction_snapshot: dict | None = None,
+    resource_yield: ResourceYieldFeedback | None = None,
+    refinery: RefineryFeedback | None = None,
+    calibration: CalibrationFeedback | None = None,
+    run_context: RunContext | None = None,
 ) -> dict:
     event = build_calculation_event(
         session_id=session_id,
@@ -119,6 +139,10 @@ def save_calculation_event(
         source=source,
         outcome=outcome,
         ml_prediction_snapshot=ml_prediction_snapshot,
+        resource_yield=resource_yield,
+        refinery=refinery,
+        calibration=calibration,
+        run_context=run_context,
     )
 
     append_jsonl(path, event)

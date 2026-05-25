@@ -1,4 +1,4 @@
-﻿heads:
+heads:
   helix_s1:
     name: "Helix S1"
     size: 1
@@ -40,3 +40,10 @@
     base_power: 1.30
     stability_modifier: 1.25
     optimal_window_modifier: 1.15
+
+  pitman_s1:
+    name: "Pitman S1"
+    size: 1
+    base_power: 1.05
+    stability_modifier: 1.05
+    optimal_window_modifier: 1.10

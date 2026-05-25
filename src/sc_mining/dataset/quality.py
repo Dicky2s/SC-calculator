@@ -10,6 +10,48 @@ from sc_mining.storage.event_reader import LABELED_OUTCOME_VALUES
 
 MIN_LABELED_ROWS_FOR_BASELINE = 30
 IMBALANCE_WARNING_SHARE = 0.80
+OPTIONAL_MISSING_COLUMNS = {
+    "operator_name",
+    "crew_size",
+    "run_tag",
+    "outcome_comment",
+    "primary_resource",
+    "resource_percent",
+    "raw_scu_estimate",
+    "total_scu_estimate",
+    "refined_scu_estimate",
+    "estimated_value_auec",
+    "mining_time_seconds",
+    "resource_comment",
+    "resource_count",
+    "resource_names",
+    "total_resource_percent",
+    "resources_json",
+    "refinery_method",
+    "refinery_location",
+    "refinery_start_at",
+    "refinery_complete_at",
+    "refined_scu_actual",
+    "refined_value_auec",
+    "refinery_fee_auec",
+    "sell_value_auec",
+    "refinery_comment",
+    "refined_resource_count",
+    "refined_resource_names",
+    "total_refined_scu_actual",
+    "total_resource_sell_value_auec",
+    "refined_resources_json",
+    "formula_issue_flag",
+    "observed_min_warmup_power_percent",
+    "observed_stable_power_percent",
+    "observed_distance",
+    "calibration_comment",
+    "calibration_attempt_count",
+    "calibration_no_warmup_count",
+    "calibration_warmup_count",
+    "calibration_stable_hold_count",
+    "calibration_attempts_json",
+}
 
 NUMERIC_SANITY_RULES: dict[str, dict[str, float | None]] = {
     "mass": {"min": 1.0, "max": 500_000.0},
@@ -75,7 +117,19 @@ def build_quality_report(
     issues: list[dict[str, Any]] = []
     row_count = int(len(dataset))
 
-    missing_columns = [column for column in DATASET_COLUMNS if column not in dataset.columns]
+    dataset = dataset.copy()
+    optional_columns = OPTIONAL_MISSING_COLUMNS
+    optional_missing_columns = [
+        column for column in DATASET_COLUMNS
+        if column not in dataset.columns and column in optional_columns
+    ]
+    for column in optional_missing_columns:
+        dataset[column] = None
+
+    missing_columns = [
+        column for column in DATASET_COLUMNS
+        if column not in dataset.columns and column not in optional_columns
+    ]
     if missing_columns:
         for column in missing_columns:
             _add_issue(
@@ -164,7 +218,7 @@ def build_quality_report(
     }
 
     for column, missing_count in missing_values.items():
-        if missing_count and column not in {"outcome_comment"}:
+        if missing_count and column not in OPTIONAL_MISSING_COLUMNS:
             _add_issue(
                 issues,
                 severity="warn",

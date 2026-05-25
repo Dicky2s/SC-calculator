@@ -1,32 +1,216 @@
-﻿modules:
-  rieger_c3:
-    name: "Rieger-C3"
+modules:
+  brandt:
+    name: "Brandt"
+    type: "active"
+    power_modifier: 1.15
+    resistance_modifier: 0.70
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.00
+
+  fltr:
+    name: "FLTR"
     type: "passive"
-    power_modifier: 1.10
-    resistance_modifier: 0.95
-    instability_modifier: 1.05
-    optimal_window_modifier: 1.10
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.00
+
+  fltr_l:
+    name: "FLTR-L"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.00
+
+  fltr_xl:
+    name: "FLTR-XL"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.00
+
+  focus:
+    name: "Focus"
+    type: "passive"
+    power_modifier: 0.98
+    resistance_modifier: 1.00
+    instability_modifier: 0.98
+    optimal_window_modifier: 1.30
+
+  focus_ii:
+    name: "Focus II"
+    type: "passive"
+    power_modifier: 0.96
+    resistance_modifier: 1.00
+    instability_modifier: 0.97
+    optimal_window_modifier: 1.40
 
   focus_iii:
     name: "Focus III"
     type: "passive"
-    power_modifier: 1.08
+    power_modifier: 0.94
     resistance_modifier: 1.00
     instability_modifier: 0.95
+    optimal_window_modifier: 1.50
+
+  forel:
+    name: "Forel"
+    type: "active"
+    power_modifier: 1.15
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.00
+
+  lifeline:
+    name: "Lifeline"
+    type: "active"
+    power_modifier: 0.85
+    resistance_modifier: 1.00
+    instability_modifier: 0.90
+    optimal_window_modifier: 1.00
+
+  optimum:
+    name: "Optimum"
+    type: "active"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.30
+
+  rieger:
+    name: "Rieger"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.04
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.06
+
+  rieger_c2:
+    name: "Rieger-C2"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.05
+    instability_modifier: 1.00
     optimal_window_modifier: 1.08
 
-  surge:
-    name: "Surge"
+  rieger_c3:
+    name: "Rieger-C3"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.06
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.10
+
+  rime:
+    name: "Rime"
     type: "active"
-    power_modifier: 1.50
+    power_modifier: 0.75
     resistance_modifier: 0.90
-    instability_modifier: 1.15
-    optimal_window_modifier: 0.95
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.00
+
+  roc:
+    name: "ROC"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.00
 
   stampede:
     name: "Stampede"
     type: "active"
     power_modifier: 1.35
-    resistance_modifier: 0.95
+    resistance_modifier: 0.90
     instability_modifier: 1.10
     optimal_window_modifier: 1.00
+
+  surge:
+    name: "Surge"
+    type: "active"
+    power_modifier: 1.50
+    resistance_modifier: 1.00
+    instability_modifier: 1.15
+    optimal_window_modifier: 0.95
+
+  torpid:
+    name: "Torpid"
+    type: "active"
+    power_modifier: 1.00
+    resistance_modifier: 1.40
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.60
+
+  torrent:
+    name: "Torrent"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 0.95
+
+  torrent_ii:
+    name: "Torrent II"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 0.97
+
+  torrent_iii:
+    name: "Torrent III"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 0.99
+
+  vaux:
+    name: "Vaux"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 0.94
+    optimal_window_modifier: 0.92
+
+  vaux_c2:
+    name: "Vaux-C2"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 0.92
+    optimal_window_modifier: 0.94
+
+  vaux_c3:
+    name: "Vaux-C3"
+    type: "passive"
+    power_modifier: 1.00
+    resistance_modifier: 1.00
+    instability_modifier: 0.90
+    optimal_window_modifier: 0.96
+
+  xtr:
+    name: "XTR"
+    type: "passive"
+    power_modifier: 0.96
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.15
+
+  xtr_l:
+    name: "XTR-L"
+    type: "passive"
+    power_modifier: 0.97
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.20
+
+  xtr_xl:
+    name: "XTR-XL"
+    type: "passive"
+    power_modifier: 0.98
+    resistance_modifier: 1.00
+    instability_modifier: 1.00
+    optimal_window_modifier: 1.25

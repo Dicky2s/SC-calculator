@@ -1,0 +1,8 @@
+build_id: prospector_helix_rieger_fltr_v1
+ship_type: prospector
+heads:
+- slot: main
+  head_id: helix_s1
+  modules:
+  - rieger_c3
+  - fltr

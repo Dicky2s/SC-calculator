@@ -1,4 +1,4 @@
-﻿from sc_mining.domain.models import (
+from sc_mining.domain.models import (
     BeamState,
     BuildProfile,
     CalculationInput,
@@ -9,16 +9,40 @@
 )
 
 
+MIN_BEAM_POWER_PERCENT = 20.0
+REFERENCE_DISTANCE_METERS = 25.0
+MIN_DISTANCE_EFFICIENCY = 0.05
+MAX_DISTANCE_EFFICIENCY = 1.75
+
+
+def clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(value, upper))
+
+
 def distance_modifier(distance: float) -> float:
-    """
-    Baseline approximation:
-    - no penalty up to 100m;
-    - after 100m difficulty grows slowly.
+    """Additional rock difficulty for long distances.
+
+    This remains intentionally mild. The main short/long distance effect is modeled
+    on beam delivery efficiency, not by making the rock itself harder.
     """
     if distance <= 100:
         return 1.0
 
     return 1.0 + ((distance - 100) / 100) * 0.15
+
+
+def distance_efficiency(distance: float) -> float:
+    """Approximate laser energy delivery at a given distance.
+
+    Mining UI power starts at 20%, but the delivered energy still depends heavily
+    on distance. A rock can be underpowered at 45m and overpowered at 15m with
+    the same beam percent.
+
+    This is a calibration heuristic, not an official Star Citizen formula.
+    """
+    safe_distance = max(float(distance), 1.0)
+    raw_efficiency = REFERENCE_DISTANCE_METERS / safe_distance
+    return clamp(raw_efficiency, MIN_DISTANCE_EFFICIENCY, MAX_DISTANCE_EFFICIENCY)
 
 
 def calculate_required_power(rock: RockInput) -> float:
@@ -83,12 +107,18 @@ def calculate_beam_power(
         power_multiplier *= module.power_modifier
         notes.append(f"Active module applied: {module_id}")
 
+    if beam.power_percent < MIN_BEAM_POWER_PERCENT:
+        raise ValueError(
+            f"Beam {beam.slot} power_percent must be at least "
+            f"{MIN_BEAM_POWER_PERCENT:.0f}. Mining laser UI starts at 20%."
+        )
+
     base = head.base_power * 100.0
     power = base * (beam.power_percent / 100.0) * power_multiplier
 
     notes.append(
         f"Beam {beam.slot}: head={head_build.head_id}, "
-        f"power_percent={beam.power_percent}, effective={power:.2f}"
+        f"power_percent={beam.power_percent}, effective_before_distance={power:.2f}"
     )
 
     return power, notes
@@ -99,7 +129,7 @@ def calculate_effective_power(
     heads: dict[str, HeadConfig],
     modules: dict[str, ModuleConfig],
 ) -> tuple[float, list[str]]:
-    total = 0.0
+    total_before_distance = 0.0
     notes: list[str] = []
 
     if not calc_input.beams:
@@ -112,8 +142,16 @@ def calculate_effective_power(
             heads=heads,
             modules=modules,
         )
-        total += beam_power
+        total_before_distance += beam_power
         notes.extend(beam_notes)
+
+    efficiency = distance_efficiency(calc_input.rock.distance)
+    total = total_before_distance * efficiency
+
+    notes.append(
+        f"Distance efficiency: distance={calc_input.rock.distance}, "
+        f"factor={efficiency:.3f}, effective_after_distance={total:.2f}"
+    )
 
     return total, notes
 
@@ -136,7 +174,13 @@ def calculate_risk_score(
     margin_risk = 1.0 - max(min((margin_ratio + 0.3) / 0.8, 1.0), 0.0)
     instability_risk = min(rock.instability, 1.0) * 0.5
 
-    return max(min(margin_risk + instability_risk, 1.0), 0.0)
+    # Too much delivered power is also risky: at close range the same percent can
+    # overshoot the extraction window. This keeps high positive margins visible
+    # as risk instead of always treating them as safe.
+    overpower_ratio = effective_power / max(required_power, 1.0)
+    overpower_risk = min(max((overpower_ratio - 1.20) / 1.30, 0.0) * 0.55, 0.55)
+
+    return max(min(margin_risk + instability_risk + overpower_risk, 1.0), 0.0)
 
 
 def choose_verdict(margin: float, risk_score: float) -> str:

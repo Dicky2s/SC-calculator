@@ -1,0 +1,14 @@
+build_id: mole_helix_rieger_fltr_v1
+ship_type: mole
+heads:
+- slot: left
+  head_id: helix_s2
+  modules: &id001
+  - rieger_c3
+  - fltr
+- slot: center
+  head_id: helix_s2
+  modules: *id001
+- slot: right
+  head_id: helix_s2
+  modules: *id001

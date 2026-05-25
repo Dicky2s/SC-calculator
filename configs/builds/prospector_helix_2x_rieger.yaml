@@ -1,0 +1,8 @@
+build_id: prospector_helix_2x_rieger_v1
+ship_type: prospector
+heads:
+- slot: main
+  head_id: helix_s1
+  modules:
+  - rieger_c3
+  - rieger_c3

@@ -1,0 +1,8 @@
+build_id: golem_pitman_rieger_torrent_v1
+ship_type: golem
+heads:
+- slot: main
+  head_id: pitman_s1
+  modules:
+  - rieger_c3
+  - torrent
