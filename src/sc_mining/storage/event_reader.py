@@ -23,7 +23,20 @@ EVENT_COLUMNS = [
     "margin",
     "risk_score",
     "verdict",
+    "actual_outcome",
+    "outcome_comment",
 ]
+
+
+LABELED_OUTCOME_VALUES = {
+    "good",
+    "bad",
+    "too_slow",
+    "too_unstable",
+    "not_enough_power",
+    "overheated",
+    "wrong_prediction",
+}
 
 
 def read_jsonl(path: str | Path) -> list[dict]:
@@ -55,6 +68,7 @@ def flatten_event(event: dict) -> dict:
     build = event.get("build", {})
     rock = event.get("rock", {})
     result = event.get("result", {})
+    outcome = event.get("outcome", {})
     beams = event.get("beams", [])
 
     beam_slots = [beam.get("slot", "") for beam in beams]
@@ -79,6 +93,8 @@ def flatten_event(event: dict) -> dict:
         "margin": result.get("margin"),
         "risk_score": result.get("risk_score"),
         "verdict": result.get("verdict"),
+        "actual_outcome": outcome.get("actual_outcome", "unknown"),
+        "outcome_comment": outcome.get("comment", ""),
     }
 
 
@@ -102,13 +118,20 @@ def get_events_summary(df: pd.DataFrame) -> dict:
     if df.empty:
         return {
             "event_count": 0,
+            "labeled_event_count": 0,
+            "unlabeled_event_count": 0,
             "session_count": 0,
             "build_count": 0,
             "ship_count": 0,
         }
 
+    actual_outcome = df["actual_outcome"].fillna("unknown")
+    labeled_mask = actual_outcome.isin(LABELED_OUTCOME_VALUES)
+
     return {
         "event_count": int(len(df)),
+        "labeled_event_count": int(labeled_mask.sum()),
+        "unlabeled_event_count": int((~labeled_mask).sum()),
         "session_count": int(df["session_id"].nunique()),
         "build_count": int(df["build_id"].nunique()),
         "ship_count": int(df["ship_type"].nunique()),

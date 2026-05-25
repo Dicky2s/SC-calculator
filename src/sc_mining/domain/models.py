@@ -1,10 +1,20 @@
-﻿from typing import Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
 ModuleType = Literal["passive", "active"]
 Verdict = Literal["take", "risky", "skip", "need_more_power"]
+OutcomeLabel = Literal[
+    "unknown",
+    "good",
+    "bad",
+    "too_slow",
+    "too_unstable",
+    "not_enough_power",
+    "overheated",
+    "wrong_prediction",
+]
 
 
 class RockInput(BaseModel):
@@ -62,3 +72,8 @@ class CalculationResult(BaseModel):
     risk_score: float
     verdict: Verdict
     notes: list[str] = Field(default_factory=list)
+
+
+class OutcomeFeedback(BaseModel):
+    actual_outcome: OutcomeLabel = "unknown"
+    comment: str = ""

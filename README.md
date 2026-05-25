@@ -8,13 +8,20 @@ Current scope:
 - Prospector and MOLE manual build profiles
 - deterministic calculation core
 - manual event logging to JSONL
+- manual outcome labeling for saved events
 - event dataset reader
+- dataset export from JSONL to CSV
+- dataset quality report
 - Streamlit UI with:
   - calculator tab
   - saved events tab
-  - filters by session, ship, verdict
+  - actual outcome selector and comment field
+  - filters by session, ship, verdict, actual outcome
   - verdict distribution chart
+  - actual outcome distribution chart
   - numeric dataset summary
+  - CSV export block
+  - dataset quality report
 
 ## Setup
 
@@ -33,7 +40,7 @@ python -m pytest -q
 Expected:
 
 ```text
-9 passed
+24 passed
 ```
 
 ## Run UI
@@ -51,6 +58,51 @@ data/sessions/manual_events.jsonl
 ```
 
 The file is JSONL: one calculation event per line.
+
+Exported analytics/ML dataset is written to:
+
+```text
+data/datasets/mining_events.csv
+```
+
+## Event structure
+
+Each saved event contains:
+
+```text
+session_id
+build
+rock
+beams
+result
+outcome
+```
+
+`result` is the rule-based calculator output.
+
+`outcome` is the manual label from the real in-game result. This field is the future ML target.
+
+Example outcome block:
+
+```json
+{
+  "actual_outcome": "good",
+  "comment": "fractured fine and was worth taking"
+}
+```
+
+Supported `actual_outcome` values:
+
+```text
+unknown
+good
+bad
+too_slow
+too_unstable
+not_enough_power
+overheated
+wrong_prediction
+```
 
 ## Current architecture
 
@@ -70,6 +122,9 @@ src/sc_mining/
   storage/
     event_logger.py
     event_reader.py
+  dataset/
+    exporter.py
+    quality.py
   ui/
     streamlit_app.py
 
@@ -81,7 +136,7 @@ tests/
 
 ## Next planned blocks
 
-1. Add labeled outcome field: whether the rock was actually worth taking in-game.
-2. Add calibration dataset export.
-3. Train a first simple baseline model on saved events.
-4. Compare formula verdict vs learned verdict.
+1. Collect real labeled events.
+2. Train a first simple baseline model on saved events.
+3. Add model evaluation report.
+4. Compare formula verdict vs learned prediction in the UI.

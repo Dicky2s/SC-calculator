@@ -4,7 +4,11 @@ from typing import Any
 from uuid import uuid4
 import json
 
-from sc_mining.domain.models import CalculationInput, CalculationResult
+from sc_mining.domain.models import (
+    CalculationInput,
+    CalculationResult,
+    OutcomeFeedback,
+)
 
 
 def utc_now_iso() -> str:
@@ -26,7 +30,10 @@ def build_calculation_event(
     calc_input: CalculationInput,
     result: CalculationResult,
     source: str = "manual_ui",
+    outcome: OutcomeFeedback | None = None,
 ) -> dict:
+    outcome_feedback = outcome or OutcomeFeedback()
+
     return {
         "event_id": str(uuid4()),
         "session_id": session_id,
@@ -40,6 +47,7 @@ def build_calculation_event(
         "rock": model_to_dict(calc_input.rock),
         "beams": [model_to_dict(beam) for beam in calc_input.beams],
         "result": model_to_dict(result),
+        "outcome": model_to_dict(outcome_feedback),
     }
 
 
@@ -57,12 +65,14 @@ def save_calculation_event(
     calc_input: CalculationInput,
     result: CalculationResult,
     source: str = "manual_ui",
+    outcome: OutcomeFeedback | None = None,
 ) -> dict:
     event = build_calculation_event(
         session_id=session_id,
         calc_input=calc_input,
         result=result,
         source=source,
+        outcome=outcome,
     )
 
     append_jsonl(path, event)

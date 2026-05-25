@@ -60,6 +60,10 @@ def test_load_events_dataframe_flattens_event(tmp_path):
             "risk_score": 0.1,
             "verdict": "take",
         },
+        "outcome": {
+            "actual_outcome": "good",
+            "comment": "fractured fine",
+        },
     }
 
     path.write_text(json.dumps(event), encoding="utf-8")
@@ -74,6 +78,8 @@ def test_load_events_dataframe_flattens_event(tmp_path):
     assert df.iloc[0]["beam_count"] == 1
     assert df.iloc[0]["beam_slots"] == "main"
     assert df.iloc[0]["verdict"] == "take"
+    assert df.iloc[0]["actual_outcome"] == "good"
+    assert df.iloc[0]["outcome_comment"] == "fractured fine"
 
 
 def test_get_events_summary_for_empty_dataframe(tmp_path):
@@ -83,9 +89,50 @@ def test_get_events_summary_for_empty_dataframe(tmp_path):
     summary = get_events_summary(df)
 
     assert summary["event_count"] == 0
+    assert summary["labeled_event_count"] == 0
+    assert summary["unlabeled_event_count"] == 0
     assert summary["session_count"] == 0
     assert summary["build_count"] == 0
     assert summary["ship_count"] == 0
+
+
+def test_get_events_summary_counts_labeled_and_unlabeled_events(tmp_path):
+    path = tmp_path / "events.jsonl"
+
+    records = [
+        {
+            "event_id": "event-1",
+            "session_id": "s1",
+            "build": {"build_id": "b1", "ship_type": "prospector"},
+            "outcome": {"actual_outcome": "unknown", "comment": ""},
+        },
+        {
+            "event_id": "event-2",
+            "session_id": "s1",
+            "build": {"build_id": "b1", "ship_type": "prospector"},
+            "outcome": {"actual_outcome": "good", "comment": ""},
+        },
+        {
+            "event_id": "event-3",
+            "session_id": "s2",
+            "build": {"build_id": "b2", "ship_type": "mole"},
+            "outcome": {"actual_outcome": "too_unstable", "comment": ""},
+        },
+    ]
+
+    path.write_text(
+        "\n".join(json.dumps(record) for record in records),
+        encoding="utf-8",
+    )
+
+    summary = get_events_summary(load_events_dataframe(path))
+
+    assert summary["event_count"] == 3
+    assert summary["labeled_event_count"] == 2
+    assert summary["unlabeled_event_count"] == 1
+    assert summary["session_count"] == 2
+    assert summary["build_count"] == 2
+    assert summary["ship_count"] == 2
 
 
 def test_flatten_event_handles_missing_fields():
@@ -95,3 +142,5 @@ def test_flatten_event_handles_missing_fields():
     assert row["beam_count"] == 0
     assert row["beam_slots"] == ""
     assert row["beam_power_sum"] == 0
+    assert row["actual_outcome"] == "unknown"
+    assert row["outcome_comment"] == ""
