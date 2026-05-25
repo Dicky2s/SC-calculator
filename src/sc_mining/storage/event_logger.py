@@ -33,11 +33,13 @@ def build_calculation_event(
     outcome: OutcomeFeedback | None = None,
 ) -> dict:
     outcome_feedback = outcome or OutcomeFeedback()
+    event_timestamp = utc_now_iso()
+    is_labeled = outcome_feedback.actual_outcome != "unknown"
 
     return {
         "event_id": str(uuid4()),
         "session_id": session_id,
-        "timestamp": utc_now_iso(),
+        "timestamp": event_timestamp,
         "source": source,
         "build": {
             "build_id": calc_input.build.build_id,
@@ -48,6 +50,11 @@ def build_calculation_event(
         "beams": [model_to_dict(beam) for beam in calc_input.beams],
         "result": model_to_dict(result),
         "outcome": model_to_dict(outcome_feedback),
+        "labeling": {
+            "label_source": "initial_save_ui" if is_labeled else "",
+            "labeled_at": event_timestamp if is_labeled else "",
+            "is_labeled": is_labeled,
+        },
     }
 
 

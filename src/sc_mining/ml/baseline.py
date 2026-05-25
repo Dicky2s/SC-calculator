@@ -52,6 +52,7 @@ CATEGORICAL_FEATURES = [
 MIN_LABELED_ROWS_FOR_TRAINING = 30
 MIN_CLASSES_FOR_TRAINING = 2
 DEFAULT_TEST_SIZE = 0.30
+DEFAULT_MODEL_SOURCE = "manual_baseline"
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class TrainingReadiness:
 @dataclass(frozen=True)
 class BaselineTrainingResult:
     model_version: str
+    model_source: str
     model_path: str
     report_path: str
     rows_total: int
@@ -217,6 +219,7 @@ def train_baseline_model(
     min_labeled_rows: int = MIN_LABELED_ROWS_FOR_TRAINING,
     test_size: float = DEFAULT_TEST_SIZE,
     random_state: int = 42,
+    model_source: str = DEFAULT_MODEL_SOURCE,
 ) -> BaselineTrainingResult:
     """Train a first binary baseline model: good vs not-good outcome."""
 
@@ -248,6 +251,7 @@ def train_baseline_model(
     labels = [0, 1]
     report = {
         "model_version": MODEL_VERSION,
+        "model_source": model_source,
         "target_definition": {
             "positive_class": "actual_outcome == good",
             "negative_class": "any other labeled actual_outcome",
@@ -291,6 +295,7 @@ def train_baseline_model(
 
     return BaselineTrainingResult(
         model_version=MODEL_VERSION,
+        model_source=model_source,
         model_path=str(target_model_path),
         report_path=str(target_report_path),
         rows_total=int(len(dataset)),

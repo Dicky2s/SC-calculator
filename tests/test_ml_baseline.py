@@ -92,11 +92,13 @@ def test_train_baseline_model_writes_model_and_report(tmp_path):
         min_labeled_rows=10,
         test_size=0.25,
         random_state=7,
+        model_source="unit_test",
     )
 
     assert model_path.exists()
     assert report_path.exists()
     assert result.model_version == MODEL_VERSION
+    assert result.model_source == "unit_test"
     assert result.rows_used == 40
     assert result.train_rows == 30
     assert result.test_rows == 10
@@ -104,6 +106,7 @@ def test_train_baseline_model_writes_model_and_report(tmp_path):
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["model_version"] == MODEL_VERSION
+    assert report["model_source"] == "unit_test"
     assert report["rows_used"] == 40
     assert "classification_report" in report
     assert "confusion_matrix" in report

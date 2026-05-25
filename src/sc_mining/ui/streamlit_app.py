@@ -23,8 +23,19 @@ from sc_mining.dataset.synthetic import export_synthetic_dataset, synthetic_summ
 from sc_mining.ml.baseline import (
     MIN_LABELED_ROWS_FOR_TRAINING,
     check_training_readiness,
+    load_baseline_model,
     result_to_dict,
     train_baseline_model,
+)
+from sc_mining.ml.comparison import (
+    apply_formula_ml_comparison_to_dataset,
+    build_comparison_export_dataframe,
+    compare_formula_with_model,
+    comparison_actual_outcome_coverage,
+    comparison_export_csv,
+    comparison_to_dict,
+    infer_model_source,
+    model_source_warning,
 )
 from sc_mining.domain.models import (
     BeamState,
@@ -33,6 +44,7 @@ from sc_mining.domain.models import (
     RockInput,
 )
 from sc_mining.storage.event_logger import save_calculation_event
+from sc_mining.storage.outcome_labeler import update_event_outcome
 from sc_mining.storage.event_reader import get_events_summary, load_events_dataframe
 
 
@@ -114,6 +126,124 @@ def render_outcome_form() -> OutcomeFeedback:
     )
 
 
+
+
+def format_event_option(row: pd.Series) -> str:
+    event_id = str(row.get("event_id", ""))
+    short_id = event_id[:8] if event_id else "missing"
+    timestamp = str(row.get("timestamp", ""))[:19]
+    ship_type = row.get("ship_type", "")
+    mass = row.get("mass", "")
+    verdict = row.get("verdict", "")
+    outcome = row.get("actual_outcome", "unknown")
+    return f"{short_id} | {timestamp} | {ship_type} | mass={mass} | verdict={verdict} | outcome={outcome}"
+
+
+def render_outcome_labeling_queue(df: pd.DataFrame) -> None:
+    st.subheader("Outcome labeling queue")
+    st.caption(
+        "Update unknown outcomes after checking rocks in-game. "
+        "These labels become the supervised ML target."
+    )
+
+    if df.empty:
+        st.info("No events available for labeling.")
+        return
+
+    normalized_outcome = df["actual_outcome"].fillna("unknown").astype(str)
+    unknown_count = int((normalized_outcome == "unknown").sum())
+    labeled_count = int((normalized_outcome != "unknown").sum())
+
+    queue_col1, queue_col2, queue_col3 = st.columns(3)
+    queue_col1.metric("Unknown", unknown_count)
+    queue_col2.metric("Labeled", labeled_count)
+    queue_col3.metric("Total", len(df))
+
+    show_unknown_only = st.checkbox(
+        "Show unknown outcomes only",
+        value=True,
+        key="labeling_show_unknown_only",
+    )
+
+    queue = df.copy()
+    if show_unknown_only:
+        queue = queue[queue["actual_outcome"].fillna("unknown").astype(str) == "unknown"]
+
+    if queue.empty:
+        st.success("No unknown events in the current labeling queue.")
+        return
+
+    queue = queue.sort_values("timestamp", ascending=False, na_position="last")
+    event_ids = queue["event_id"].astype(str).tolist()
+    option_labels = {
+        str(row["event_id"]): format_event_option(row)
+        for _, row in queue.iterrows()
+    }
+
+    with st.form("outcome_labeling_form"):
+        selected_event_id = st.selectbox(
+            "Event to label",
+            options=event_ids,
+            format_func=lambda event_id: option_labels.get(str(event_id), str(event_id)),
+        )
+
+        selected_row = queue[queue["event_id"].astype(str) == str(selected_event_id)].iloc[0]
+
+        preview_columns = [
+            "event_id",
+            "timestamp",
+            "ship_type",
+            "build_id",
+            "mass",
+            "resistance",
+            "instability",
+            "distance",
+            "margin",
+            "risk_score",
+            "verdict",
+            "actual_outcome",
+            "outcome_comment",
+        ]
+        st.write("Selected event preview")
+        st.dataframe(
+            pd.DataFrame([selected_row[preview_columns].to_dict()]),
+            width="stretch",
+        )
+
+        label_options = [key for key in OUTCOME_OPTIONS.keys() if key != "unknown"]
+        new_outcome = st.selectbox(
+            "New actual outcome",
+            options=label_options,
+            format_func=lambda key: OUTCOME_OPTIONS[key],
+        )
+        new_comment = st.text_area(
+            "Label comment",
+            value=str(selected_row.get("outcome_comment") or ""),
+            placeholder="Example: в игре взялся нормально / был слишком нестабилен / мощности не хватило",
+            height=90,
+        )
+
+        submitted = st.form_submit_button("Update outcome label")
+
+    if submitted:
+        try:
+            update_result = update_event_outcome(
+                path=EVENTS_PATH,
+                event_id=str(selected_event_id),
+                outcome=OutcomeFeedback(
+                    actual_outcome=new_outcome,
+                    comment=new_comment.strip(),
+                ),
+            )
+        except Exception as exc:
+            st.error(f"Could not update event outcome: {exc}")
+            return
+
+        st.success(
+            f"Updated {update_result['event_id']}: "
+            f"{update_result['previous_outcome']} → {update_result['actual_outcome']}"
+        )
+        st.rerun()
 
 def render_basic_analytics_block(dataset: pd.DataFrame) -> None:
     st.subheader("Basic analytics")
@@ -200,6 +330,7 @@ def render_ml_baseline_block(
     report_path: Path = MODEL_REPORT_PATH,
     key_prefix: str = "manual",
     default_min_labeled_rows: int = MIN_LABELED_ROWS_FOR_TRAINING,
+    model_source: str = "manual_baseline",
 ) -> None:
     st.subheader(title)
     st.caption(
@@ -255,6 +386,7 @@ def render_ml_baseline_block(
                 model_path=model_path,
                 report_path=report_path,
                 min_labeled_rows=int(min_labeled_rows),
+                model_source=model_source,
             )
         except ValueError as exc:
             st.error(str(exc))
@@ -270,6 +402,146 @@ def render_ml_baseline_block(
         with st.expander("Last baseline report", expanded=False):
             st.json(report_path.read_text(encoding="utf-8"))
 
+
+
+def available_model_paths() -> dict[str, Path]:
+    options: dict[str, Path] = {}
+    if MODEL_PATH.exists():
+        options["Manual baseline model"] = MODEL_PATH
+    if SYNTHETIC_MODEL_PATH.exists():
+        options["Synthetic smoke-test model"] = SYNTHETIC_MODEL_PATH
+    return options
+
+
+def render_calculator_ml_comparison(calc_input: CalculationInput, result) -> None:
+    st.subheader("Formula vs ML comparison")
+    st.caption(
+        "Compares the rule-based formula verdict with the latest trained baseline model. "
+        "Use synthetic models only to smoke-test the integration."
+    )
+
+    model_options = available_model_paths()
+    if not model_options:
+        st.info(
+            "No trained model found yet. Train a manual baseline model or the synthetic smoke-test model first."
+        )
+        return
+
+    selected_label = st.selectbox(
+        "Model for comparison",
+        options=list(model_options.keys()),
+        key="calculator_ml_model_selector",
+    )
+    selected_path = model_options[selected_label]
+
+    selected_model_source = infer_model_source(selected_path)
+    warning = model_source_warning(selected_model_source)
+    if warning:
+        st.warning(warning)
+
+    comparison = compare_formula_with_model(
+        calc_input=calc_input,
+        result=result,
+        model_path=selected_path,
+        model_source=selected_model_source,
+    )
+
+    if not comparison.model_available:
+        st.info(comparison.reason)
+        return
+
+    comp_col1, comp_col2, comp_col3, comp_col4, comp_col5 = st.columns(5)
+    comp_col1.metric("Formula verdict", format_verdict(comparison.formula_verdict))
+    comp_col2.metric("Formula expects", comparison.formula_expected_outcome)
+    comp_col3.metric("ML prediction", comparison.ml_prediction)
+    comp_col4.metric("ML good probability", comparison.ml_good_probability)
+    comp_col5.metric("Model source", comparison.model_source)
+
+    st.write(f"Agreement: `{comparison.agreement_label}`")
+    st.write(f"Confidence band: `{comparison.confidence_band}`")
+    st.caption(comparison.recommendation)
+
+    with st.expander("Raw comparison payload", expanded=False):
+        st.json(comparison_to_dict(comparison))
+
+
+def render_dataset_ml_comparison_block(dataset: pd.DataFrame) -> None:
+    st.subheader("Formula vs ML dataset comparison")
+    st.caption(
+        "Applies a trained baseline model to the current dataset and highlights rows where ML and the formula disagree."
+    )
+
+    model_options = available_model_paths()
+    if not model_options:
+        st.info("No trained model found yet. Train a baseline model before running dataset comparison.")
+        return
+
+    selected_label = st.selectbox(
+        "Model for dataset comparison",
+        options=list(model_options.keys()),
+        key="dataset_ml_model_selector",
+    )
+    selected_path = model_options[selected_label]
+
+    selected_model_source = infer_model_source(selected_path)
+    warning = model_source_warning(selected_model_source)
+    if warning:
+        st.warning(warning)
+
+    try:
+        model = load_baseline_model(selected_path)
+        compared = apply_formula_ml_comparison_to_dataset(
+            dataset,
+            model,
+            model_source=selected_model_source,
+        )
+    except Exception as exc:  # defensive UI boundary; tests cover normal path
+        st.error(f"Could not apply model: {exc}")
+        return
+
+    if compared.empty:
+        st.info("No rows available for comparison.")
+        return
+
+    agreement_distribution = (
+        compared.groupby("formula_ml_agreement", dropna=False)
+        .size()
+        .reset_index(name="count")
+        .sort_values("count", ascending=False)
+    )
+
+    st.write("Agreement distribution")
+    st.dataframe(agreement_distribution, width="stretch")
+
+    coverage = comparison_actual_outcome_coverage(compared)
+    coverage_col1, coverage_col2, coverage_col3, coverage_col4 = st.columns(4)
+    coverage_col1.metric("Rows", coverage["row_count"])
+    coverage_col2.metric("Known outcomes", coverage["known_outcome_count"])
+    coverage_col3.metric("Unknown outcomes", coverage["unknown_outcome_count"])
+    coverage_col4.metric("Known outcome ratio", coverage["known_outcome_ratio"])
+
+    labels = sorted(compared["formula_ml_agreement"].dropna().unique())
+    selected_labels = st.multiselect(
+        "Agreement labels",
+        options=labels,
+        default=labels,
+        key="dataset_ml_agreement_filter",
+    )
+
+    view = compared
+    if selected_labels:
+        view = view[view["formula_ml_agreement"].isin(selected_labels)]
+
+    export_view = build_comparison_export_dataframe(view)
+    st.dataframe(export_view, width="stretch")
+
+    st.download_button(
+        "Download clean comparison CSV",
+        data=comparison_export_csv(view),
+        file_name="formula_vs_ml_comparison.csv",
+        mime="text/csv",
+        help="Exports without the extra pandas/Streamlit index column such as Unnamed: 0.",
+    )
 
 def render_synthetic_dataset_block() -> pd.DataFrame:
     st.subheader("Synthetic smoke-test dataset")
@@ -442,6 +714,8 @@ def render_calculator_tab(heads, modules, build, session_id: str) -> None:
     st.subheader("Result")
     render_result_metrics(result)
 
+    render_calculator_ml_comparison(calc_input, result)
+
     outcome = render_outcome_form()
 
     st.subheader("Save event")
@@ -568,6 +842,8 @@ def render_saved_events_tab() -> None:
 
     st.subheader("Filtered events")
     st.dataframe(filtered, width="stretch")
+
+    render_outcome_labeling_queue(df)
 
     verdict_chart_data = (
         filtered.groupby("verdict", dropna=False)
@@ -705,6 +981,7 @@ def render_saved_events_tab() -> None:
 
     render_basic_analytics_block(quality_dataset)
     render_ml_baseline_block(quality_dataset)
+    render_dataset_ml_comparison_block(quality_dataset)
 
     if not synthetic_dataset.empty:
         with st.expander("Train on synthetic dataset for smoke test", expanded=False):
@@ -715,6 +992,7 @@ def render_saved_events_tab() -> None:
                 report_path=SYNTHETIC_MODEL_REPORT_PATH,
                 key_prefix="synthetic",
                 default_min_labeled_rows=30,
+                model_source="synthetic_smoke_test",
             )
 
 

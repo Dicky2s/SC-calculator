@@ -14,6 +14,7 @@ Current scope:
 - dataset quality report
 - basic analytics dashboard for formula-vs-outcome inspection
 - baseline ML training for good vs not-good outcome
+- formula-vs-ML comparison for current calculator input and saved datasets
 - Streamlit UI with:
   - calculator tab
   - saved events tab
@@ -26,6 +27,7 @@ Current scope:
   - dataset quality report
   - basic analytics dashboard
   - baseline ML training block
+  - formula-vs-ML comparison block
 
 ## Setup
 
@@ -44,7 +46,7 @@ python -m pytest -q
 Expected:
 
 ```text
-37 passed
+49 passed
 ```
 
 ## Run UI
@@ -130,8 +132,10 @@ src/sc_mining/
     exporter.py
     quality.py
     analytics.py
+    synthetic.py
   ml/
     baseline.py
+    comparison.py
   ui/
     streamlit_app.py
 
@@ -149,7 +153,7 @@ tests/
 
 1. Collect real labeled events.
 2. Collect at least 30-50 real labeled events before trusting the model.
-3. Compare formula verdict vs learned prediction in the UI.
+3. Collect enough real data to replace synthetic smoke-test checks.
 4. Add model/version metadata to events.
 
 ## Basic analytics
@@ -206,3 +210,96 @@ both good and not-good examples
 ```
 
 This is the first MLOps training step: labeled dataset -> model artifact -> evaluation report.
+
+
+## Formula vs ML comparison
+
+Block 10 adds comparison between the rule-based calculator and a trained baseline model.
+
+In the Calculator tab it shows:
+
+```text
+Formula verdict
+Formula expected outcome
+ML prediction
+ML good probability
+Agreement label
+Confidence band
+```
+
+In the Saved events tab it can apply the selected model to the current dataset and show rows where the formula and ML disagree.
+
+Important labels:
+
+```text
+formula_and_ml_take              formula says take, ML predicts good
+ml_warns_against_formula_take    formula says take, ML predicts not_good
+ml_sees_possible_opportunity     formula says avoid/risky, ML predicts good
+formula_and_ml_avoid             formula says avoid/risky, ML predicts not_good
+```
+
+MLOps purpose: this is the inference/validation bridge. It connects model artifacts back into the application, while keeping the rule-based formula visible for comparison. Synthetic models remain smoke-test only; real decisions require real labeled events.
+
+
+## Export cleanup and model source labels
+
+Block 10.1 makes Formula vs ML exports safer and easier to interpret.
+
+Added:
+
+```text
+model_source
+model_warning
+clean comparison CSV download
+actual_outcome coverage metrics
+```
+
+Model sources:
+
+```text
+manual_baseline        model trained on manually collected/labeled events
+synthetic_smoke_test   model trained on generated test data only
+unknown                source could not be inferred
+```
+
+The dataset comparison block now has an explicit clean CSV download that uses `index=False`, so exported files should not contain extra columns like:
+
+```text
+Unnamed: 0
+index
+level_0
+```
+
+MLOps purpose: this prevents synthetic smoke-test artifacts from being confused with real gameplay models and keeps exported comparison datasets stable for downstream analysis.
+
+## Real outcome workflow
+
+Block 11 adds a manual outcome labeling queue in the Saved events tab.
+
+What it does:
+
+```text
+unknown event -> manual outcome label -> updated JSONL event -> labeled dataset row
+```
+
+New module:
+
+```text
+src/sc_mining/storage/outcome_labeler.py
+```
+
+The labeler updates an existing event in:
+
+```text
+data/sessions/manual_events.jsonl
+```
+
+and writes label metadata:
+
+```text
+label_source = manual_review_ui
+labeled_at   = ISO timestamp
+is_labeled   = true/false
+```
+
+MLOps purpose: this turns raw logged calculator events into supervised training examples. Without this step, most rows stay `actual_outcome = unknown` and cannot be used to train a real baseline model.

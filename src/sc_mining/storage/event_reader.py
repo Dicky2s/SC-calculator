@@ -25,6 +25,8 @@ EVENT_COLUMNS = [
     "verdict",
     "actual_outcome",
     "outcome_comment",
+    "label_source",
+    "labeled_at",
 ]
 
 
@@ -69,6 +71,7 @@ def flatten_event(event: dict) -> dict:
     rock = event.get("rock", {})
     result = event.get("result", {})
     outcome = event.get("outcome", {})
+    labeling = event.get("labeling", {})
     beams = event.get("beams", [])
 
     beam_slots = [beam.get("slot", "") for beam in beams]
@@ -95,6 +98,8 @@ def flatten_event(event: dict) -> dict:
         "verdict": result.get("verdict"),
         "actual_outcome": outcome.get("actual_outcome", "unknown"),
         "outcome_comment": outcome.get("comment", ""),
+        "label_source": labeling.get("label_source", ""),
+        "labeled_at": labeling.get("labeled_at", ""),
     }
 
 
