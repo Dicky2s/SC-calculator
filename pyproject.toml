@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sc-mining-assistant"
+version = "0.1.0"
+description = "Manual Star Citizen mining calculator with event logging and dataset viewer."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2",
+    "PyYAML>=6",
+    "pandas>=2",
+    "streamlit>=1.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

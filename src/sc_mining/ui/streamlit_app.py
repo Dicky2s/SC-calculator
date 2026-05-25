@@ -8,6 +8,7 @@ from sc_mining.domain.calculator import calculate
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules
 from sc_mining.domain.models import BeamState, CalculationInput, RockInput
 from sc_mining.storage.event_logger import save_calculation_event
+from sc_mining.storage.event_reader import get_events_summary, load_events_dataframe
 
 
 CONFIG_DIR = Path("configs")
@@ -35,42 +36,17 @@ def default_session_id() -> str:
     return "manual_" + datetime.now().strftime("%Y_%m_%d")
 
 
-def main() -> None:
-    st.set_page_config(
-        page_title="SC Mining Assistant",
-        layout="wide",
-    )
+def render_result_metrics(result) -> None:
+    metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
 
-    st.title("SC Mining Assistant")
-    st.caption("Manual baseline calculator + manual event logger")
+    metric_col1.metric("Verdict", format_verdict(result.verdict))
+    metric_col2.metric("Required", result.required_power)
+    metric_col3.metric("Effective", result.effective_power)
+    metric_col4.metric("Margin", result.margin)
+    metric_col5.metric("Risk", result.risk_score)
 
-    heads = load_heads(CONFIG_DIR / "heads.yaml")
-    modules = load_modules(CONFIG_DIR / "modules.yaml")
 
-    build_files = list_build_files()
-    if not build_files:
-        st.error("No build YAML files found in configs/builds")
-        return
-
-    st.sidebar.subheader("Session")
-
-    session_id = st.sidebar.text_input(
-        "Session ID",
-        value=default_session_id(),
-    )
-
-    build_file = st.sidebar.selectbox(
-        "Build profile",
-        build_files,
-        format_func=lambda path: path.name,
-    )
-
-    build = load_build(build_file)
-
-    st.sidebar.subheader("Current build")
-    st.sidebar.write(f"Build ID: `{build.build_id}`")
-    st.sidebar.write(f"Ship: `{build.ship_type}`")
-
+def render_calculator_tab(heads, modules, build, session_id: str) -> None:
     st.subheader("Rock parameters")
 
     col1, col2, col3, col4 = st.columns(4)
@@ -157,14 +133,7 @@ def main() -> None:
     result = calculate(calc_input, heads=heads, modules=modules)
 
     st.subheader("Result")
-
-    metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
-
-    metric_col1.metric("Verdict", format_verdict(result.verdict))
-    metric_col2.metric("Required", result.required_power)
-    metric_col3.metric("Effective", result.effective_power)
-    metric_col4.metric("Margin", result.margin)
-    metric_col5.metric("Risk", result.risk_score)
+    render_result_metrics(result)
 
     st.subheader("Save event")
 
@@ -201,13 +170,157 @@ def main() -> None:
     ]
 
     df = pd.DataFrame(rows)
-
     st.dataframe(df, width="stretch")
 
     if result.notes:
         st.subheader("Notes")
         for note in result.notes:
             st.write(f"- {note}")
+
+
+def render_saved_events_tab() -> None:
+    st.subheader("Saved events")
+    st.write(f"Source: `{EVENTS_PATH}`")
+
+    df = load_events_dataframe(EVENTS_PATH)
+    summary = get_events_summary(df)
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    metric_col1.metric("Events", summary["event_count"])
+    metric_col2.metric("Sessions", summary["session_count"])
+    metric_col3.metric("Builds", summary["build_count"])
+    metric_col4.metric("Ships", summary["ship_count"])
+
+    if df.empty:
+        st.info("No saved events yet. Save a calculation from the Calculator tab first.")
+        return
+
+    filtered = df.copy()
+
+    with st.expander("Filters", expanded=True):
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+
+        with filter_col1:
+            session_values = sorted(
+                value for value in filtered["session_id"].dropna().unique()
+            )
+            selected_sessions = st.multiselect(
+                "Session",
+                options=session_values,
+                default=session_values,
+            )
+
+        with filter_col2:
+            ship_values = sorted(
+                value for value in filtered["ship_type"].dropna().unique()
+            )
+            selected_ships = st.multiselect(
+                "Ship",
+                options=ship_values,
+                default=ship_values,
+            )
+
+        with filter_col3:
+            verdict_values = sorted(
+                value for value in filtered["verdict"].dropna().unique()
+            )
+            selected_verdicts = st.multiselect(
+                "Verdict",
+                options=verdict_values,
+                default=verdict_values,
+            )
+
+    if selected_sessions:
+        filtered = filtered[filtered["session_id"].isin(selected_sessions)]
+
+    if selected_ships:
+        filtered = filtered[filtered["ship_type"].isin(selected_ships)]
+
+    if selected_verdicts:
+        filtered = filtered[filtered["verdict"].isin(selected_verdicts)]
+
+    filtered = filtered.sort_values("timestamp", ascending=False, na_position="last")
+
+    st.subheader("Filtered events")
+    st.dataframe(filtered, width="stretch")
+
+    chart_data = (
+        filtered.groupby("verdict", dropna=False)
+        .size()
+        .reset_index(name="count")
+        .set_index("verdict")
+    )
+
+    st.subheader("Verdict distribution")
+    st.bar_chart(chart_data)
+
+    numeric_columns = [
+        "mass",
+        "resistance",
+        "instability",
+        "distance",
+        "beam_power_sum",
+        "required_power",
+        "effective_power",
+        "margin",
+        "risk_score",
+    ]
+
+    st.subheader("Numeric summary")
+    st.dataframe(
+        filtered[numeric_columns].describe().round(3),
+        width="stretch",
+    )
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="SC Mining Assistant",
+        layout="wide",
+    )
+
+    st.title("SC Mining Assistant")
+    st.caption("Manual baseline calculator + manual event logger + event dataset viewer")
+
+    heads = load_heads(CONFIG_DIR / "heads.yaml")
+    modules = load_modules(CONFIG_DIR / "modules.yaml")
+
+    build_files = list_build_files()
+    if not build_files:
+        st.error("No build YAML files found in configs/builds")
+        return
+
+    st.sidebar.subheader("Session")
+
+    session_id = st.sidebar.text_input(
+        "Session ID",
+        value=default_session_id(),
+    )
+
+    build_file = st.sidebar.selectbox(
+        "Build profile",
+        build_files,
+        format_func=lambda path: path.name,
+    )
+
+    build = load_build(build_file)
+
+    st.sidebar.subheader("Current build")
+    st.sidebar.write(f"Build ID: `{build.build_id}`")
+    st.sidebar.write(f"Ship: `{build.ship_type}`")
+
+    calculator_tab, saved_events_tab = st.tabs(["Calculator", "Saved events"])
+
+    with calculator_tab:
+        render_calculator_tab(
+            heads=heads,
+            modules=modules,
+            build=build,
+            session_id=session_id,
+        )
+
+    with saved_events_tab:
+        render_saved_events_tab()
 
 
 if __name__ == "__main__":
