@@ -1,0 +1,32 @@
+﻿modules:
+  rieger_c3:
+    name: "Rieger-C3"
+    type: "passive"
+    power_modifier: 1.10
+    resistance_modifier: 0.95
+    instability_modifier: 1.05
+    optimal_window_modifier: 1.10
+
+  focus_iii:
+    name: "Focus III"
+    type: "passive"
+    power_modifier: 1.08
+    resistance_modifier: 1.00
+    instability_modifier: 0.95
+    optimal_window_modifier: 1.08
+
+  surge:
+    name: "Surge"
+    type: "active"
+    power_modifier: 1.50
+    resistance_modifier: 0.90
+    instability_modifier: 1.15
+    optimal_window_modifier: 0.95
+
+  stampede:
+    name: "Stampede"
+    type: "active"
+    power_modifier: 1.35
+    resistance_modifier: 0.95
+    instability_modifier: 1.10
+    optimal_window_modifier: 1.00

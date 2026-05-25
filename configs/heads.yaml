@@ -1,0 +1,42 @@
+﻿heads:
+  helix_s1:
+    name: "Helix S1"
+    size: 1
+    base_power: 1.00
+    stability_modifier: 1.00
+    optimal_window_modifier: 1.00
+
+  hofstede_s1:
+    name: "Hofstede S1"
+    size: 1
+    base_power: 0.85
+    stability_modifier: 1.10
+    optimal_window_modifier: 1.05
+
+  lancet_s1:
+    name: "Lancet S1"
+    size: 1
+    base_power: 0.75
+    stability_modifier: 1.25
+    optimal_window_modifier: 1.15
+
+  helix_s2:
+    name: "Helix S2"
+    size: 2
+    base_power: 1.70
+    stability_modifier: 1.00
+    optimal_window_modifier: 1.00
+
+  hofstede_s2:
+    name: "Hofstede S2"
+    size: 2
+    base_power: 1.45
+    stability_modifier: 1.10
+    optimal_window_modifier: 1.05
+
+  lancet_s2:
+    name: "Lancet S2"
+    size: 2
+    base_power: 1.30
+    stability_modifier: 1.25
+    optimal_window_modifier: 1.15

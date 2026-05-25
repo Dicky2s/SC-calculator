@@ -1,0 +1,9 @@
+﻿build_id: "prospector_helix_rieger_focus_v1"
+ship_type: "prospector"
+
+heads:
+  - slot: "main"
+    head_id: "helix_s1"
+    modules:
+      - "rieger_c3"
+      - "focus_iii"

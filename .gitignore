@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.streamlit/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.local
+data/raw/
+data/crops/
+data/videos/
+data/sessions/
+mlruns/

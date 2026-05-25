@@ -1,0 +1,21 @@
+﻿build_id: "mole_mixed_v1"
+ship_type: "mole"
+
+heads:
+  - slot: "left"
+    head_id: "helix_s2"
+    modules:
+      - "rieger_c3"
+      - "focus_iii"
+
+  - slot: "center"
+    head_id: "hofstede_s2"
+    modules:
+      - "focus_iii"
+      - "focus_iii"
+
+  - slot: "right"
+    head_id: "lancet_s2"
+    modules:
+      - "focus_iii"
+      - "stampede"
