@@ -23,6 +23,16 @@ EVENT_COLUMNS = [
     "margin",
     "risk_score",
     "verdict",
+    "ml_model_available",
+    "ml_model_version",
+    "ml_model_path",
+    "ml_model_source",
+    "ml_formula_expected_outcome",
+    "ml_prediction",
+    "ml_good_probability",
+    "ml_confidence_band",
+    "ml_agreement_label",
+    "ml_prediction_captured_at",
     "actual_outcome",
     "outcome_comment",
     "label_source",
@@ -71,6 +81,7 @@ def flatten_event(event: dict) -> dict:
     rock = event.get("rock", {})
     result = event.get("result", {})
     outcome = event.get("outcome", {})
+    ml_prediction = event.get("ml_prediction", {})
     labeling = event.get("labeling", {})
     beams = event.get("beams", [])
 
@@ -96,6 +107,16 @@ def flatten_event(event: dict) -> dict:
         "margin": result.get("margin"),
         "risk_score": result.get("risk_score"),
         "verdict": result.get("verdict"),
+        "ml_model_available": bool(ml_prediction.get("model_available", False)),
+        "ml_model_version": ml_prediction.get("model_version", ""),
+        "ml_model_path": ml_prediction.get("model_path", ""),
+        "ml_model_source": ml_prediction.get("model_source", ""),
+        "ml_formula_expected_outcome": ml_prediction.get("formula_expected_outcome", ""),
+        "ml_prediction": ml_prediction.get("prediction", ""),
+        "ml_good_probability": ml_prediction.get("good_probability"),
+        "ml_confidence_band": ml_prediction.get("confidence_band", ""),
+        "ml_agreement_label": ml_prediction.get("agreement_label", ""),
+        "ml_prediction_captured_at": ml_prediction.get("captured_at", ""),
         "actual_outcome": outcome.get("actual_outcome", "unknown"),
         "outcome_comment": outcome.get("comment", ""),
         "label_source": labeling.get("label_source", ""),

@@ -25,16 +25,52 @@ def model_to_dict(model: Any) -> dict:
     raise TypeError(f"Object is not a Pydantic model: {type(model)}")
 
 
+def normalize_ml_prediction_snapshot(snapshot: dict | None, captured_at: str) -> dict:
+    """Normalize formula-vs-ML comparison payload before storing it in an event."""
+
+    if not snapshot:
+        return {
+            "model_available": False,
+            "model_version": "",
+            "model_path": "",
+            "model_source": "",
+            "formula_expected_outcome": "",
+            "prediction": "",
+            "good_probability": None,
+            "confidence_band": "",
+            "agreement_label": "",
+            "recommendation": "",
+            "captured_at": "",
+        }
+
+    return {
+        "model_available": bool(snapshot.get("model_available", False)),
+        "model_version": snapshot.get("model_version") or "",
+        "model_path": snapshot.get("model_path") or "",
+        "model_source": snapshot.get("model_source") or "",
+        "formula_expected_outcome": snapshot.get("formula_expected_outcome") or "",
+        "prediction": snapshot.get("ml_prediction") or snapshot.get("prediction") or "",
+        "good_probability": snapshot.get("ml_good_probability", snapshot.get("good_probability")),
+        "confidence_band": snapshot.get("confidence_band") or snapshot.get("ml_confidence_band") or "",
+        "agreement_label": snapshot.get("agreement_label") or snapshot.get("formula_ml_agreement") or "",
+        "recommendation": snapshot.get("recommendation") or "",
+        "captured_at": captured_at,
+    }
+
+
 def build_calculation_event(
     session_id: str,
     calc_input: CalculationInput,
     result: CalculationResult,
     source: str = "manual_ui",
     outcome: OutcomeFeedback | None = None,
+    ml_prediction_snapshot: dict | None = None,
 ) -> dict:
     outcome_feedback = outcome or OutcomeFeedback()
     event_timestamp = utc_now_iso()
     is_labeled = outcome_feedback.actual_outcome != "unknown"
+
+    ml_prediction = normalize_ml_prediction_snapshot(ml_prediction_snapshot, event_timestamp)
 
     return {
         "event_id": str(uuid4()),
@@ -49,6 +85,7 @@ def build_calculation_event(
         "rock": model_to_dict(calc_input.rock),
         "beams": [model_to_dict(beam) for beam in calc_input.beams],
         "result": model_to_dict(result),
+        "ml_prediction": ml_prediction,
         "outcome": model_to_dict(outcome_feedback),
         "labeling": {
             "label_source": "initial_save_ui" if is_labeled else "",
@@ -73,6 +110,7 @@ def save_calculation_event(
     result: CalculationResult,
     source: str = "manual_ui",
     outcome: OutcomeFeedback | None = None,
+    ml_prediction_snapshot: dict | None = None,
 ) -> dict:
     event = build_calculation_event(
         session_id=session_id,
@@ -80,6 +118,7 @@ def save_calculation_event(
         result=result,
         source=source,
         outcome=outcome,
+        ml_prediction_snapshot=ml_prediction_snapshot,
     )
 
     append_jsonl(path, event)

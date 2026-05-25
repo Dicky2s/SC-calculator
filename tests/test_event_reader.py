@@ -144,3 +144,49 @@ def test_flatten_event_handles_missing_fields():
     assert row["beam_power_sum"] == 0
     assert row["actual_outcome"] == "unknown"
     assert row["outcome_comment"] == ""
+
+
+def test_load_events_dataframe_flattens_ml_prediction_snapshot(tmp_path):
+    path = tmp_path / "events.jsonl"
+
+    event = {
+        "event_id": "event-ml-1",
+        "session_id": "session-1",
+        "timestamp": "2026-05-25T12:00:00+00:00",
+        "source": "manual_ui",
+        "build": {"build_id": "b1", "ship_type": "prospector"},
+        "rock": {"mass": 10000, "resistance": 0.2, "instability": 0.1, "distance": 90},
+        "beams": [{"slot": "main", "power_percent": 70}],
+        "result": {
+            "required_power": 20,
+            "effective_power": 30,
+            "margin": 10,
+            "risk_score": 0.2,
+            "verdict": "take",
+        },
+        "ml_prediction": {
+            "model_available": True,
+            "model_version": "baseline_rf_v1",
+            "model_path": "models/model.joblib",
+            "model_source": "manual_real_data",
+            "formula_expected_outcome": "good",
+            "prediction": "not_good",
+            "good_probability": 0.33,
+            "confidence_band": "weak_not_good",
+            "agreement_label": "ml_warns_against_formula_take",
+            "captured_at": "2026-05-25T12:00:01+00:00",
+        },
+        "outcome": {"actual_outcome": "unknown", "comment": ""},
+    }
+    path.write_text(json.dumps(event), encoding="utf-8")
+
+    row = load_events_dataframe(path).iloc[0]
+
+    assert bool(row["ml_model_available"]) is True
+    assert row["ml_model_version"] == "baseline_rf_v1"
+    assert row["ml_model_source"] == "manual_real_data"
+    assert row["ml_formula_expected_outcome"] == "good"
+    assert row["ml_prediction"] == "not_good"
+    assert row["ml_good_probability"] == 0.33
+    assert row["ml_confidence_band"] == "weak_not_good"
+    assert row["ml_agreement_label"] == "ml_warns_against_formula_take"

@@ -90,3 +90,38 @@ def test_save_calculation_event_writes_manual_outcome(tmp_path):
     assert event["outcome"]["actual_outcome"] == "good"
     assert event["outcome"]["comment"] == "fractured fine and was worth taking"
     assert loaded["outcome"] == event["outcome"]
+
+
+def test_save_calculation_event_writes_ml_prediction_snapshot(tmp_path):
+    calc_input, result = make_calculation()
+    output_path = tmp_path / "events.jsonl"
+
+    event = save_calculation_event(
+        path=output_path,
+        session_id="test_session",
+        calc_input=calc_input,
+        result=result,
+        source="test",
+        ml_prediction_snapshot={
+            "model_available": True,
+            "model_version": "baseline_rf_v1",
+            "model_path": "models/mining_outcome_baseline_manual.joblib",
+            "model_source": "manual_real_data",
+            "formula_expected_outcome": "good",
+            "ml_prediction": "good",
+            "ml_good_probability": 0.81,
+            "confidence_band": "high_good",
+            "agreement_label": "formula_and_ml_take",
+            "recommendation": "review manually",
+        },
+    )
+
+    loaded = json.loads(output_path.read_text(encoding="utf-8").strip())
+
+    assert event["ml_prediction"]["model_available"] is True
+    assert event["ml_prediction"]["model_source"] == "manual_real_data"
+    assert event["ml_prediction"]["prediction"] == "good"
+    assert event["ml_prediction"]["good_probability"] == 0.81
+    assert event["ml_prediction"]["agreement_label"] == "formula_and_ml_take"
+    assert event["ml_prediction"]["captured_at"] == event["timestamp"]
+    assert loaded["ml_prediction"] == event["ml_prediction"]

@@ -402,3 +402,153 @@ It does not train a model. It records which existing model artifact should be us
 
 This is an MLOps control step: model artifacts can exist side by side, but inference should use an explicitly selected active model. Synthetic smoke-test models remain clearly marked and should not be treated as gameplay advice.
 
+
+## Prediction logging
+
+Block 15 stores the current Formula vs ML prediction snapshot directly inside each saved manual event when a model is available.
+
+New module:
+
+```text
+src/sc_mining/ml/prediction_logging.py
+```
+
+Saved event JSONL now includes an `ml_prediction` block with:
+
+```text
+model_version
+model_path
+model_source
+formula_expected_outcome
+prediction
+good_probability
+confidence_band
+agreement_label
+captured_at
+```
+
+Saved events UI now includes:
+
+```text
+Prediction logging
+```
+
+MLOps purpose: this turns model inference into an auditable event stream. Later, when `actual_outcome` is filled, the same event can be used to compare what the active model predicted at save time against what actually happened in gameplay.
+
+
+## Block 16 — Prediction outcome evaluation
+
+Adds historical inference evaluation for logged ML prediction snapshots.
+
+Flow:
+
+```text
+Calculator saves event + ML snapshot
+    ↓
+Outcome labeling queue adds actual_outcome
+    ↓
+Prediction outcome evaluation compares ml_prediction vs actual_outcome
+```
+
+Outputs in UI:
+
+- evaluable prediction count;
+- accuracy on labeled snapshots;
+- false-good count;
+- false-not-good count;
+- actual target vs ML prediction matrix;
+- downloadable `prediction_evaluation.csv`.
+
+MLOps purpose: this is post-inference monitoring. It checks how historical predictions performed after real labels become available.
+
+## Block 17 — Model promotion gate
+
+Adds a conservative promotion gate before a manual real-data model can become the active inference model.
+
+New files:
+
+- `src/sc_mining/ml/promotion.py`
+- `tests/test_model_promotion.py`
+
+The gate checks:
+
+- manual real-data model artifact exists;
+- manual training report exists and is valid JSON;
+- report model source is `manual_real_data`;
+- enough labeled rows were used for training;
+- enough test rows exist;
+- accuracy is above the selected threshold;
+- binary target contains both `good` and `not_good` classes;
+- historical false-good rate is not above the selected review threshold, when evaluated prediction snapshots exist.
+
+This is an MLOps guardrail: it prevents accidentally promoting a synthetic smoke-test artifact or a clearly undertrained model into active inference.
+
+Run checks:
+
+```powershell
+python -m pytest -q
+python -m streamlit run src/sc_mining/ui/streamlit_app.py
+```
+
+Expected tests:
+
+```text
+94 passed
+```
+
+## Block 18 — Real ML run starter
+
+Adds a controlled entry point for a real/manual ML run.
+
+New files:
+
+- `src/sc_mining/ml/real_run.py`
+- `scripts/run_real_ml_pipeline.py`
+- `docs/REAL_ML_RUNBOOK.md`
+- `tests/test_real_ml_run.py`
+
+The run performs:
+
+```text
+manual_events.jsonl
+  → mining_events.csv
+  → dataset quality report
+  → training readiness check
+  → manual real-data baseline training
+  → training run tracking
+  → promotion gate evaluation
+  → optional active_model.json update
+```
+
+UI now includes:
+
+```text
+Saved events → Real ML run starter
+```
+
+CLI example:
+
+```powershell
+python scripts/run_real_ml_pipeline.py --min-labeled 30
+```
+
+Promotion example:
+
+```powershell
+python scripts/run_real_ml_pipeline.py --min-labeled 30 --promote-if-passed
+```
+
+MLOps purpose: this consolidates the real-data training path into one auditable run. Synthetic smoke-test artifacts remain separated from manual real-data artifacts.
+
+Run checks:
+
+```powershell
+python -m pytest -q
+python -m streamlit run src/sc_mining/ui/streamlit_app.py
+```
+
+Expected tests:
+
+```text
+98 passed
+```

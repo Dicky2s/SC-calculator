@@ -64,6 +64,26 @@ from sc_mining.ml.active_model import (
     read_active_model_config,
     write_active_model_config,
 )
+from sc_mining.ml.prediction_logging import (
+    build_prediction_log_dataframe,
+    build_prediction_log_summary,
+)
+from sc_mining.ml.prediction_evaluation import (
+    build_prediction_evaluation_dataframe,
+    build_prediction_evaluation_matrix,
+    build_prediction_evaluation_summary,
+)
+from sc_mining.ml.promotion import (
+    PromotionCriteria,
+    evaluate_model_promotion,
+    promotion_decision_to_dict,
+)
+from sc_mining.ml.real_run import (
+    RealMLRunConfig,
+    real_ml_run_result_to_dict,
+    result_to_dataframe as real_ml_run_result_to_dataframe,
+    run_real_ml_pipeline,
+)
 from sc_mining.domain.models import (
     BeamState,
     CalculationInput,
@@ -567,6 +587,238 @@ def render_active_model_selection_block() -> None:
         st.rerun()
 
 
+def render_model_promotion_gate_block(events: pd.DataFrame) -> None:
+    st.subheader("Model promotion gate")
+    st.caption(
+        "Reviews whether the manual real-data model is safe to promote as the active inference model. "
+        "This is a guardrail, not a proof that the model is correct."
+    )
+
+    criteria_col1, criteria_col2, criteria_col3, criteria_col4 = st.columns(4)
+    with criteria_col1:
+        min_rows = st.number_input(
+            "Min training rows",
+            min_value=4,
+            max_value=1000,
+            value=30,
+            step=1,
+            key="promotion_min_rows",
+        )
+    with criteria_col2:
+        min_test_rows = st.number_input(
+            "Min test rows",
+            min_value=1,
+            max_value=500,
+            value=5,
+            step=1,
+            key="promotion_min_test_rows",
+        )
+    with criteria_col3:
+        min_accuracy = st.slider(
+            "Min accuracy",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.60,
+            step=0.01,
+            key="promotion_min_accuracy",
+        )
+    with criteria_col4:
+        max_false_good_rate = st.slider(
+            "Max false-good rate",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.25,
+            step=0.01,
+            key="promotion_max_false_good_rate",
+            help="False-good means the ML snapshot predicted good but actual_outcome later became not-good.",
+        )
+
+    prediction_eval_summary = build_prediction_evaluation_summary(events)
+    criteria = PromotionCriteria(
+        min_rows_used=int(min_rows),
+        min_test_rows=int(min_test_rows),
+        min_accuracy=float(min_accuracy),
+        max_false_good_rate=float(max_false_good_rate),
+    )
+    decision = evaluate_model_promotion(
+        model_path=MODEL_PATH,
+        report_path=MODEL_REPORT_PATH,
+        criteria=criteria,
+        prediction_evaluation_summary=prediction_eval_summary,
+    )
+
+    promo_col1, promo_col2, promo_col3, promo_col4, promo_col5 = st.columns(5)
+    promo_col1.metric("Gate status", decision.status.upper())
+    promo_col2.metric("Can promote", "YES" if decision.can_promote else "NO")
+    promo_col3.metric("Rows used", decision.metrics.get("rows_used", 0))
+    promo_col4.metric("Accuracy", decision.metrics.get("accuracy", "—"))
+    promo_col5.metric("False-good rate", decision.metrics.get("false_good_rate", "—"))
+
+    st.write(f"Candidate model: `{MODEL_PATH}`")
+    st.write(f"Candidate report: `{MODEL_REPORT_PATH}`")
+
+    if decision.status == "pass":
+        st.success("Promotion gate passed. Manual real-data model can be selected as the active model candidate.")
+    elif decision.status == "warn":
+        st.warning("Promotion gate passed with warnings. Review warnings before activating the model.")
+    else:
+        st.error("Promotion gate failed. Do not promote this model yet.")
+
+    if decision.reasons:
+        st.write("Blocking reasons")
+        st.dataframe(pd.DataFrame({"reason": decision.reasons}), width="stretch")
+
+    if decision.warnings:
+        st.write("Warnings")
+        st.dataframe(pd.DataFrame({"warning": decision.warnings}), width="stretch")
+
+    with st.expander("Promotion decision payload", expanded=False):
+        st.json(promotion_decision_to_dict(decision))
+
+    manual_spec = next(
+        spec for spec in default_model_artifact_specs()
+        if spec.model_source == MODEL_SOURCE_MANUAL_REAL
+    )
+    promote_clicked = st.button(
+        "Promote manual model to active",
+        disabled=not decision.can_promote,
+        key="promote_manual_model_to_active",
+        help="Writes models/active_model.json to point inference at the manual real-data model.",
+    )
+
+    if promote_clicked:
+        selection = write_active_model_config(manual_spec, ACTIVE_MODEL_CONFIG_PATH)
+        st.success(f"Promoted active model: {selection.label} [{selection.model_source}]")
+        st.rerun()
+
+
+
+def render_real_ml_run_starter_block(events: pd.DataFrame, dataset: pd.DataFrame) -> None:
+    st.subheader("Real ML run starter")
+    st.caption(
+        "One controlled run for the manual real-data model: export dataset, validate, train, log the run, "
+        "check promotion criteria, and optionally update active_model.json. Synthetic data is not used here."
+    )
+
+    control_col1, control_col2, control_col3, control_col4 = st.columns(4)
+    with control_col1:
+        min_labeled_rows = st.number_input(
+            "Run min labeled rows",
+            min_value=4,
+            max_value=2000,
+            value=30,
+            step=1,
+            key="real_run_min_labeled_rows",
+        )
+    with control_col2:
+        min_test_rows = st.number_input(
+            "Run min test rows",
+            min_value=1,
+            max_value=500,
+            value=5,
+            step=1,
+            key="real_run_min_test_rows",
+        )
+    with control_col3:
+        min_accuracy = st.slider(
+            "Run min accuracy",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.60,
+            step=0.01,
+            key="real_run_min_accuracy",
+        )
+    with control_col4:
+        max_false_good_rate = st.slider(
+            "Run max false-good rate",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.25,
+            step=0.01,
+            key="real_run_max_false_good_rate",
+        )
+
+    option_col1, option_col2 = st.columns(2)
+    with option_col1:
+        promote_if_passed = st.checkbox(
+            "Promote if gate passes",
+            value=False,
+            key="real_run_promote_if_passed",
+            help="When enabled, writes models/active_model.json only if the manual model passes promotion gate checks.",
+        )
+    with option_col2:
+        train_if_ready = st.checkbox(
+            "Train if ready",
+            value=True,
+            key="real_run_train_if_ready",
+            help="Disable this to run export/readiness/promotion checks without training.",
+        )
+
+    readiness = check_training_readiness(dataset, min_labeled_rows=int(min_labeled_rows))
+    prediction_eval_summary = build_prediction_evaluation_summary(events)
+
+    run_col1, run_col2, run_col3, run_col4 = st.columns(4)
+    run_col1.metric("Rows", len(dataset))
+    run_col2.metric("Labeled", readiness.labeled_rows)
+    run_col3.metric("Ready", "YES" if readiness.ready else "NO")
+    run_col4.metric("Evaluable predictions", prediction_eval_summary["evaluable_prediction_count"])
+
+    st.write(f"Dataset output: `{DATASET_PATH}`")
+    st.write(f"Manual model output: `{MODEL_PATH}`")
+    st.write(f"Manual report output: `{MODEL_REPORT_PATH}`")
+    st.write(f"Training run log: `{TRAINING_RUNS_PATH}`")
+
+    if not readiness.ready:
+        st.warning(readiness.reason)
+
+    run_clicked = st.button(
+        "Run real ML pipeline",
+        key="run_real_ml_pipeline",
+        help="Exports the latest events, validates the dataset, trains the manual real-data model when ready, logs the run, and evaluates promotion.",
+    )
+
+    if not run_clicked:
+        return
+
+    config = RealMLRunConfig(
+        events_path=EVENTS_PATH,
+        dataset_path=DATASET_PATH,
+        model_path=MODEL_PATH,
+        report_path=MODEL_REPORT_PATH,
+        training_runs_path=TRAINING_RUNS_PATH,
+        active_model_path=ACTIVE_MODEL_CONFIG_PATH,
+        min_labeled_rows=int(min_labeled_rows),
+        min_test_rows=int(min_test_rows),
+        min_accuracy=float(min_accuracy),
+        max_false_good_rate=float(max_false_good_rate),
+        train_if_ready=bool(train_if_ready),
+        promote_if_passed=bool(promote_if_passed),
+        notes="UI real ML run starter",
+    )
+    result = run_real_ml_pipeline(config)
+
+    if result.promoted:
+        st.success("Real ML run completed and manual model was promoted to active.")
+    elif result.trained:
+        st.success("Real ML run completed and manual model was trained.")
+    elif result.training_ready:
+        st.info("Real ML run completed. Dataset is ready, but training was disabled or promotion did not run.")
+    else:
+        st.warning("Real ML run completed, but dataset is not ready for training yet.")
+
+    st.dataframe(real_ml_run_result_to_dataframe(result), width="stretch")
+
+    if result.reasons:
+        st.write("Blocking reasons")
+        st.dataframe(pd.DataFrame({"reason": result.reasons}), width="stretch")
+
+    if result.warnings:
+        st.write("Warnings")
+        st.dataframe(pd.DataFrame({"warning": result.warnings}), width="stretch")
+
+    with st.expander("Full real ML run payload", expanded=False):
+        st.json(real_ml_run_result_to_dict(result))
+
 def render_training_run_history_block() -> None:
     st.subheader("Training run history")
     st.caption(
@@ -623,7 +875,7 @@ def render_training_run_history_block() -> None:
         mime="text/csv",
     )
 
-def render_calculator_ml_comparison(calc_input: CalculationInput, result) -> None:
+def render_calculator_ml_comparison(calc_input: CalculationInput, result):
     st.subheader("Formula vs ML comparison")
     st.caption(
         "Compares the rule-based formula verdict with the latest trained baseline model. "
@@ -635,7 +887,7 @@ def render_calculator_ml_comparison(calc_input: CalculationInput, result) -> Non
         st.info(
             "No trained model found yet. Train a manual baseline model or the synthetic smoke-test model first."
         )
-        return
+        return None
 
     selected_label = st.selectbox(
         "Model for comparison",
@@ -659,7 +911,7 @@ def render_calculator_ml_comparison(calc_input: CalculationInput, result) -> Non
 
     if not comparison.model_available:
         st.info(comparison.reason)
-        return
+        return None
 
     comp_col1, comp_col2, comp_col3, comp_col4, comp_col5 = st.columns(5)
     comp_col1.metric("Formula verdict", format_verdict(comparison.formula_verdict))
@@ -675,6 +927,142 @@ def render_calculator_ml_comparison(calc_input: CalculationInput, result) -> Non
     with st.expander("Raw comparison payload", expanded=False):
         st.json(comparison_to_dict(comparison))
 
+    return comparison
+
+
+def render_prediction_logging_block(events: pd.DataFrame) -> None:
+    st.subheader("Prediction logging")
+    st.caption(
+        "Shows Formula vs ML prediction snapshots saved inside manual events. "
+        "This is the inference audit log for later comparison against real outcomes."
+    )
+
+    summary = build_prediction_log_summary(events)
+    pred_col1, pred_col2, pred_col3 = st.columns(3)
+    pred_col1.metric("Events", summary["event_count"])
+    pred_col2.metric("Logged predictions", summary["prediction_count"])
+    pred_col3.metric("Prediction coverage", summary["prediction_coverage_ratio"])
+
+    prediction_log = build_prediction_log_dataframe(events)
+    if prediction_log.empty:
+        st.info("No logged ML prediction snapshots yet. Save an event from Calculator while a model is available.")
+        return
+
+    dist_col1, dist_col2 = st.columns(2)
+    with dist_col1:
+        st.write("Model source distribution")
+        st.dataframe(
+            pd.DataFrame(
+                summary["model_source_distribution"].items(),
+                columns=["model_source", "count"],
+            ),
+            width="stretch",
+        )
+
+    with dist_col2:
+        st.write("Formula vs ML agreement distribution")
+        st.dataframe(
+            pd.DataFrame(
+                summary["agreement_distribution"].items(),
+                columns=["agreement", "count"],
+            ),
+            width="stretch",
+        )
+
+    st.dataframe(prediction_log, width="stretch")
+
+    st.download_button(
+        "Download prediction log CSV",
+        data=prediction_log.to_csv(index=False).encode("utf-8"),
+        file_name="prediction_log.csv",
+        mime="text/csv",
+    )
+
+
+
+def render_prediction_evaluation_block(events: pd.DataFrame) -> None:
+    st.subheader("Prediction outcome evaluation")
+    st.caption(
+        "Evaluates saved ML prediction snapshots after actual_outcome labels are added. "
+        "This measures historical inference quality, not retrained model quality."
+    )
+
+    summary = build_prediction_evaluation_summary(events)
+    eval_col1, eval_col2, eval_col3, eval_col4, eval_col5 = st.columns(5)
+    eval_col1.metric("Logged predictions", summary["logged_prediction_count"])
+    eval_col2.metric("Evaluable", summary["evaluable_prediction_count"])
+    eval_col3.metric("Accuracy", summary["accuracy"] if summary["accuracy"] is not None else "—")
+    eval_col4.metric("False good", summary["false_good_count"])
+    eval_col5.metric("False not-good", summary["false_not_good_count"])
+
+    evaluated = build_prediction_evaluation_dataframe(events)
+    if evaluated.empty:
+        st.info(
+            "No evaluable predictions yet. Save events with ML snapshots and later label actual_outcome values."
+        )
+        return
+
+    if summary["false_good_count"] > 0:
+        st.warning(
+            "False-good cases exist: the ML snapshot predicted good, but the actual outcome was not-good. "
+            "These are high-priority review cases."
+        )
+
+    dist_col1, dist_col2 = st.columns(2)
+    with dist_col1:
+        st.write("Prediction error distribution")
+        st.dataframe(
+            pd.DataFrame(
+                summary["error_type_distribution"].items(),
+                columns=["error_type", "count"],
+            ),
+            width="stretch",
+        )
+
+    with dist_col2:
+        st.write("Evaluated model source distribution")
+        st.dataframe(
+            pd.DataFrame(
+                summary["model_source_distribution"].items(),
+                columns=["model_source", "count"],
+            ),
+            width="stretch",
+        )
+
+    matrix = build_prediction_evaluation_matrix(events)
+    st.write("Actual target vs ML prediction")
+    if matrix.empty:
+        st.info("No evaluation matrix available yet.")
+    else:
+        matrix_pivot = matrix.pivot_table(
+            index="actual_target",
+            columns="ml_prediction",
+            values="count",
+            fill_value=0,
+            aggfunc="sum",
+        )
+        st.dataframe(matrix_pivot, width="stretch")
+
+    error_types = sorted(evaluated["error_type"].dropna().astype(str).unique())
+    selected_error_types = st.multiselect(
+        "Prediction error types",
+        options=error_types,
+        default=error_types,
+        key="prediction_evaluation_error_types",
+    )
+
+    view = evaluated
+    if selected_error_types:
+        view = view[view["error_type"].isin(selected_error_types)]
+
+    st.dataframe(view, width="stretch")
+
+    st.download_button(
+        "Download prediction evaluation CSV",
+        data=view.to_csv(index=False).encode("utf-8"),
+        file_name="prediction_evaluation.csv",
+        mime="text/csv",
+    )
 
 def render_dataset_ml_comparison_block(dataset: pd.DataFrame) -> None:
     st.subheader("Formula vs ML dataset comparison")
@@ -926,7 +1314,7 @@ def render_calculator_tab(heads, modules, build, session_id: str) -> None:
     st.subheader("Result")
     render_result_metrics(result)
 
-    render_calculator_ml_comparison(calc_input, result)
+    ml_comparison = render_calculator_ml_comparison(calc_input, result)
 
     outcome = render_outcome_form()
 
@@ -948,6 +1336,11 @@ def render_calculator_tab(heads, modules, build, session_id: str) -> None:
             result=result,
             source="manual_ui",
             outcome=outcome,
+            ml_prediction_snapshot=(
+                comparison_to_dict(ml_comparison)
+                if ml_comparison is not None and ml_comparison.model_available
+                else None
+            ),
         )
 
         st.success(f"Saved event: {event['event_id']}")
@@ -964,6 +1357,10 @@ def render_calculator_tab(heads, modules, build, session_id: str) -> None:
         {"metric": "risk_score", "value": str(result.risk_score)},
         {"metric": "verdict", "value": str(result.verdict)},
         {"metric": "actual_outcome", "value": str(outcome.actual_outcome)},
+        {
+            "metric": "ml_prediction_logged_on_save",
+            "value": str(ml_comparison is not None and ml_comparison.model_available),
+        },
     ]
 
     df = pd.DataFrame(rows)
@@ -1056,6 +1453,8 @@ def render_saved_events_tab() -> None:
     st.dataframe(filtered, width="stretch")
 
     render_outcome_labeling_queue(df)
+    render_prediction_logging_block(df)
+    render_prediction_evaluation_block(df)
 
     verdict_chart_data = (
         filtered.groupby("verdict", dropna=False)
@@ -1192,8 +1591,10 @@ def render_saved_events_tab() -> None:
     synthetic_dataset = render_synthetic_dataset_block()
 
     render_basic_analytics_block(quality_dataset)
+    render_real_ml_run_starter_block(df, quality_dataset)
     render_model_artifact_separation_block()
     render_active_model_selection_block()
+    render_model_promotion_gate_block(df)
     render_training_run_history_block()
     render_ml_baseline_block(
         quality_dataset,
