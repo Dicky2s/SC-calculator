@@ -1,4 +1,4 @@
-﻿from sc_mining.domain.calculator import calculate
+from sc_mining.domain.calculator import calculate
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules
 from sc_mining.domain.models import BeamState, CalculationInput, RockInput
 
@@ -13,7 +13,7 @@ def test_easy_rock_should_be_take_or_risky():
             mass=5000,
             resistance=0.1,
             instability=0.05,
-            distance=80,
+            distance=30,
         ),
         build=build,
         beams=[
@@ -37,7 +37,7 @@ def test_hard_rock_should_not_be_easy_take():
             mass=50000,
             resistance=0.8,
             instability=0.4,
-            distance=140,
+            distance=45,
         ),
         build=build,
         beams=[
@@ -61,7 +61,7 @@ def test_mole_two_beams_should_have_more_power_than_prospector():
         mass=25000,
         resistance=0.35,
         instability=0.15,
-        distance=100,
+        distance=30,
     )
 
     prospector_input = CalculationInput(
@@ -97,7 +97,7 @@ def test_unknown_beam_slot_should_raise_error():
             mass=5000,
             resistance=0.1,
             instability=0.05,
-            distance=80,
+            distance=30,
         ),
         build=build,
         beams=[
@@ -118,13 +118,13 @@ def test_distance_changes_delivered_power_at_minimum_beam_power():
     build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
 
     rock_near = RockInput(
-        mass=13040,
+        mass=4000,
         resistance=0.0,
         instability=0.12,
         distance=15,
     )
     rock_far = RockInput(
-        mass=13040,
+        mass=4000,
         resistance=0.0,
         instability=0.12,
         distance=45,

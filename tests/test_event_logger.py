@@ -21,7 +21,7 @@ def make_calculation():
             mass=5000,
             resistance=0.1,
             instability=0.05,
-            distance=80,
+            distance=30,
         ),
         build=build,
         beams=[
@@ -60,6 +60,8 @@ def test_save_calculation_event_creates_jsonl_record(tmp_path):
     assert loaded["event_id"] == event["event_id"]
     assert loaded["result"]["verdict"] in {
         "take",
+        "edge_take",
+        "almost",
         "risky",
         "skip",
         "need_more_power",

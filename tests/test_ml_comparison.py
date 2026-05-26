@@ -87,6 +87,8 @@ def make_result(verdict="take") -> CalculationResult:
 
 def test_formula_expected_outcome_maps_take_to_good():
     assert formula_expected_outcome("take") == "good"
+    assert formula_expected_outcome("edge_take") == "not_good"
+    assert formula_expected_outcome("almost") == "not_good"
     assert formula_expected_outcome("risky") == "not_good"
     assert formula_expected_outcome("skip") == "not_good"
     assert formula_expected_outcome("need_more_power") == "not_good"

@@ -60,7 +60,7 @@ def test_golem_build_can_be_calculated_with_pitman_head():
             mass=18000,
             resistance=0.22,
             instability=0.10,
-            distance=85,
+            distance=35,
         ),
         build=build,
         beams=[
@@ -76,7 +76,7 @@ def test_golem_build_can_be_calculated_with_pitman_head():
 
     assert build.ship_type == "golem"
     assert result.effective_power > 0
-    assert result.verdict in {"take", "risky", "skip", "need_more_power"}
+    assert result.verdict in {"take", "edge_take", "almost", "risky", "skip", "need_more_power"}
 
 
 def test_event_reader_flattens_run_context_and_resource_yield(tmp_path):
@@ -86,7 +86,7 @@ def test_event_reader_flattens_run_context_and_resource_yield(tmp_path):
     path = tmp_path / "events.jsonl"
 
     calc_input = CalculationInput(
-        rock=RockInput(mass=18000, resistance=0.22, instability=0.10, distance=85),
+        rock=RockInput(mass=18000, resistance=0.22, instability=0.10, distance=35),
         build=build,
         beams=[BeamState(slot="main", power_percent=70, active_modules=["stampede"])],
     )

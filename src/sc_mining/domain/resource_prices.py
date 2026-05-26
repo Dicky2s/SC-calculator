@@ -8,7 +8,10 @@ DEFAULT_RESOURCE_PRICE_PATH = Path("configs") / "resource_prices.yaml"
 
 
 def normalize_resource_name(name: str | None) -> str:
-    return str(name or "unknown").strip().lower().replace(" ", "_")
+    normalized = str(name or "unknown").strip().lower().replace(" ", "_")
+    if normalized == "inert_materials":
+        return "inert_material"
+    return normalized
 
 
 def load_resource_price_config(path: str | Path = DEFAULT_RESOURCE_PRICE_PATH) -> dict[str, Any]:

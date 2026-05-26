@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 ModuleType = Literal["passive", "active"]
-Verdict = Literal["take", "risky", "skip", "need_more_power"]
+Verdict = Literal["take", "edge_take", "almost", "risky", "skip", "need_more_power"]
 OutcomeLabel = Literal[
     "unknown",
     "good",
@@ -23,6 +23,17 @@ PowerObservationLabel = Literal[
     "overpowered",
     "too_unstable",
     "too_slow",
+]
+
+PowerObservationSource = Literal[
+    "actual",
+    "formula",
+]
+
+PowerObservationPhase = Literal[
+    "unknown",
+    "warmup",
+    "stable",
 ]
 
 ObservedWindowSize = Literal[
@@ -54,7 +65,12 @@ class RockInput(BaseModel):
 class HeadConfig(BaseModel):
     name: str
     size: int
+    # Backward-compatible normalized power kept for older configs.
+    # Calculator logic uses max_power when present.
     base_power: float
+    max_power: float | None = None
+    optimal_range: float = 15.0
+    max_range: float = 45.0
     stability_modifier: float = 1.0
     optimal_window_modifier: float = 1.0
 
@@ -192,6 +208,8 @@ class PowerDistanceObservation(BaseModel):
     distance: float = Field(gt=0)
     power_percent: float = Field(ge=20, le=100)
     observation: PowerObservationLabel = "unknown"
+    observation_source: PowerObservationSource = "actual"
+    observation_phase: PowerObservationPhase = "unknown"
     beam_warmed: bool | None = None
     held_stable: bool | None = None
     comment: str = ""

@@ -1,5 +1,7 @@
 from datetime import datetime
 from pathlib import Path
+
+RESOURCES_CONFIG = Path("configs") / "resources.yaml"
 import json
 
 import pandas as pd
@@ -9,6 +11,13 @@ import streamlit as st
 
 from sc_mining.domain.calculator import calculate
 from sc_mining.domain.recommendations import build_power_distance_recommendation
+from sc_mining.domain.calibration_report import (
+    actual_power_to_observation,
+    formula_candidate_to_observation,
+    formula_issue_report_rows,
+)
+from sc_mining.domain.resource_math import build_resource_scu_preview_rows
+from sc_mining.domain.resource_prices import load_resource_price_config
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules, load_resources
 from sc_mining.dataset.exporter import build_dataset, export_dataset, get_dataset_export_summary
 from sc_mining.dataset.analytics import (
@@ -114,6 +123,7 @@ from sc_mining.storage.event_history import (
 
 
 CONFIG_DIR = Path("configs")
+RESOURCE_PRICES_PATH = CONFIG_DIR / "resource_prices.yaml"
 BUILDS_DIR = CONFIG_DIR / "builds"
 EVENTS_PATH = Path("data") / "sessions" / "manual_events.jsonl"
 DATASET_PATH = Path("data") / "datasets" / "mining_events.csv"
@@ -171,6 +181,9 @@ RESOURCE_OPTIONS = [
     "tungsten",
     "other",
 ]
+
+# Fallback list for forms that do not receive dynamic resource profiles.
+FALLBACK_RESOURCE_OPTIONS = RESOURCE_OPTIONS
 
 
 def resource_options_from_profiles(resource_profiles: dict) -> list[str]:
@@ -274,9 +287,19 @@ def render_result_metrics(result) -> None:
 
     metric_col1.metric("Verdict", format_verdict(result.verdict))
     metric_col2.metric("Required", result.required_power)
-    metric_col3.metric("Effective", result.effective_power)
+    metric_col3.metric("Delivered", result.effective_power)
     metric_col4.metric("Margin", result.margin)
     metric_col5.metric("Risk", result.risk_score)
+
+    if result.margin < 0:
+        st.caption("Risk reason: delivered power is below required power, so the rock may not warm up.")
+    elif result.required_power > 0 and result.effective_power > result.required_power * 1.20:
+        st.caption(
+            "Risk reason: delivered power is far above required power. This is an overpower/overshoot risk, "
+            "usually caused by being too close, using too strong a build, or staying at the 20% minimum on an easy rock."
+        )
+    else:
+        st.caption("Risk reason: delivered power is near the required range; instability still affects hold comfort.")
 
 
 def render_outcome_form(key_prefix: str = "calculator") -> OutcomeFeedback:
@@ -352,12 +375,20 @@ def _fill_resource_scu_from_total(resources: list[ResourceComponent], total_scu_
 
     filled: list[ResourceComponent] = []
     for item in resources:
-        if item.raw_scu_estimate is None and item.resource_percent is not None:
+        percent = item.resource_percent
+        raw_scu = item.raw_scu_estimate
+        should_derive_scu = (
+            percent is not None
+            and percent > 0
+            and (raw_scu is None or raw_scu <= 0)
+        )
+
+        if should_derive_scu:
             filled.append(
                 ResourceComponent(
                     resource_name=item.resource_name,
-                    resource_percent=item.resource_percent,
-                    raw_scu_estimate=round(total_scu_estimate * item.resource_percent / 100.0, 3),
+                    resource_percent=percent,
+                    raw_scu_estimate=round(total_scu_estimate * percent / 100.0, 3),
                     observed_window_size=item.observed_window_size,
                     observed_charge_behavior=item.observed_charge_behavior,
                     comment=item.comment,
@@ -419,9 +450,9 @@ def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calcu
 
     default_resources = pd.DataFrame(
         [
-            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
-            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
-            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
+            {"resource_name": "unknown", "resource_percent": None, "raw_scu_estimate": None, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
+            {"resource_name": "unknown", "resource_percent": None, "raw_scu_estimate": None, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
+            {"resource_name": "unknown", "resource_percent": None, "raw_scu_estimate": None, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
         ]
     )
 
@@ -446,7 +477,7 @@ def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calcu
                 "Raw SCU",
                 min_value=0.0,
                 step=0.01,
-                help="Optional. Leave empty/0 to derive from total composition SCU and scan %."
+                help="Optional. Leave empty or 0 to derive from total composition SCU and scan %."
             ),
             "observed_window_size": st.column_config.SelectboxColumn(
                 "Observed window",
@@ -466,17 +497,51 @@ def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calcu
     total_scu_value = total_scu_estimate if total_scu_estimate > 0 else None
     resources = _fill_resource_scu_from_total(resources, total_scu_value)
 
+    auto_estimated_value_auec: float | None = None
+
     if resources:
+        price_config = load_resource_price_config(RESOURCE_PRICES_PATH)
+        market_preview_rows = build_resource_scu_preview_rows(
+            resources,
+            total_scu_estimate=total_scu_value,
+            prices=price_config.get("prices", {}),
+        )
+        total_row = next(
+            (row for row in market_preview_rows if row.get("resource_name") == "TOTAL"),
+            {},
+        )
+        auto_estimated_value_raw = total_row.get("estimated_processed_value_auec")
+        if auto_estimated_value_raw not in (None, ""):
+            auto_estimated_value_auec = float(auto_estimated_value_raw)
+
         preview_rows = [
             {
-                "resource_name": item.resource_name,
-                "resource_percent": item.resource_percent,
-                "raw_scu_estimate": item.raw_scu_estimate,
-                "comment": item.comment,
+                "Resource": row.get("resource_name"),
+                "Scan %": row.get("scan_percent"),
+                "Derived raw SCU": row.get("estimated_scu_from_percent"),
+                "Saved raw SCU": row.get("saved_raw_scu"),
+                "Market price / SCU": row.get("market_price_auec_per_scu"),
+                "Estimated value, aUEC": row.get("estimated_processed_value_auec"),
+                "Comment": row.get("comment"),
             }
-            for item in resources
+            for row in market_preview_rows
         ]
-        with st.expander("Derived resource preview", expanded=False):
+        total_percent = float(total_row.get("scan_percent") or 0.0)
+        total_raw_scu = float(total_row.get("estimated_scu_from_percent") or 0.0)
+        total_value_label = (
+            f"{auto_estimated_value_auec:,.0f}".replace(",", " ")
+            if auto_estimated_value_auec is not None
+            else "—"
+        )
+        with st.expander("Auto-derived resource preview", expanded=False):
+            st.caption(
+                "This is a calculated preview: Derived raw SCU = Composition total SCU × Scan % / 100. "
+                "Estimated value uses configs/resource_prices.yaml. If you type a real Raw SCU manually, that value is preserved."
+            )
+            total_col1, total_col2, total_col3 = st.columns(3)
+            total_col1.metric("Total scan %", f"{total_percent:.2f}")
+            total_col2.metric("Derived raw SCU total", f"{total_raw_scu:.3f}")
+            total_col3.metric("Estimated value, aUEC", total_value_label)
             display_safe_dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
 
     with st.expander("Resource profile reference", expanded=False):
@@ -509,6 +574,14 @@ def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calcu
             value=0.0,
             step=1000.0,
             key=f"{key_prefix}_estimated_value_auec",
+            help="Manual override. Leave 0 to save the auto-estimated value from the resource preview when prices are available.",
+        )
+
+    estimated_value_for_event = estimated_value_auec if estimated_value_auec > 0 else auto_estimated_value_auec
+    if estimated_value_auec <= 0 and auto_estimated_value_auec is not None:
+        st.caption(
+            f"Auto-estimated value will be saved if you leave the manual value at 0: "
+            f"{auto_estimated_value_auec:,.0f} aUEC".replace(",", " ")
         )
 
     primary_resource = "unknown"
@@ -527,7 +600,7 @@ def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calcu
         raw_scu_estimate=raw_scu_estimate,
         total_scu_estimate=total_scu_value,
         refined_scu_estimate=None,
-        estimated_value_auec=estimated_value_auec if estimated_value_auec > 0 else None,
+        estimated_value_auec=estimated_value_for_event if estimated_value_for_event and estimated_value_for_event > 0 else None,
         mining_time_seconds=mining_time_seconds if mining_time_seconds > 0 else None,
         comment=resource_comment.strip(),
         resources=resources,
@@ -622,7 +695,7 @@ def render_refinery_form(key_prefix: str = "calculator") -> RefineryFeedback:
             column_config={
                 "resource_name": st.column_config.SelectboxColumn(
                     "Resource",
-                    options=resource_options,
+                    options=FALLBACK_RESOURCE_OPTIONS,
                     required=False,
                 ),
                 "refined_scu_actual": st.column_config.NumberColumn(
@@ -671,6 +744,8 @@ def _clean_calibration_observation_rows(rows: list[dict]) -> list[PowerDistanceO
         distance = row.get("distance")
         power_percent = row.get("power_percent")
         observation = str(row.get("observation", "unknown") or "unknown")
+        observation_source = str(row.get("observation_source", "actual") or "actual")
+        observation_phase = str(row.get("observation_phase", "unknown") or "unknown")
         beam_warmed = row.get("beam_warmed")
         held_stable = row.get("held_stable")
         comment = str(row.get("comment", "") or "")
@@ -699,6 +774,8 @@ def _clean_calibration_observation_rows(rows: list[dict]) -> list[PowerDistanceO
                 distance=float(distance),
                 power_percent=float(power_percent),
                 observation=observation,
+                observation_source=observation_source,
+                observation_phase=observation_phase,
                 beam_warmed=warmed_value,
                 held_stable=stable_value,
                 comment=comment.strip(),
@@ -708,83 +785,263 @@ def _clean_calibration_observation_rows(rows: list[dict]) -> list[PowerDistanceO
     return observations
 
 
-def render_calibration_form(key_prefix: str = "calculator") -> CalibrationFeedback:
-    st.subheader("Power/distance calibration")
+def _positive_or_none(value: float) -> float | None:
+    return float(value) if value and float(value) > 0 else None
+
+
+def render_calibration_form(
+    key_prefix: str = "calculator",
+    recommendation=None,
+) -> CalibrationFeedback:
+    st.markdown("### Step 6 — Formula error report / calibration")
     st.caption(
-        "Optional: use this when the formula/helper does not match the game. "
-        "These structured observations are more useful than free-text comments for formula calibration."
+        "Optional: enable this when the formula/helper does not match the game. "
+        "The report keeps two formula rows and two actual in-game rows, split into warm-up and stable hold."
     )
 
-    with st.expander("Add calibration observations", expanded=False):
-        formula_issue_flag = st.checkbox(
-            "Formula/helper looked wrong for this rock",
-            value=False,
-            key=f"{key_prefix}_formula_issue_flag",
-        )
+    formula_issue_flag = st.checkbox(
+        "Formula/helper looked wrong for this rock",
+        value=False,
+        key=f"{key_prefix}_formula_issue_flag",
+    )
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            observed_distance = st.number_input(
-                "Observed distance, m",
+    observed_distance = 0.0
+    observed_min_warmup_power_percent = 0.0
+    observed_stable_power_percent = 0.0
+    calibration_comment = ""
+    edited_observations = pd.DataFrame()
+    actual_warmup_distance = 0.0
+    actual_warmup_power_percent = 0.0
+    actual_stable_distance = 0.0
+    actual_stable_power_percent = 0.0
+
+    if formula_issue_flag:
+        formula_warmup = getattr(recommendation, "minimum_warmup", None)
+        formula_stable = getattr(recommendation, "stable_hold", None)
+
+        st.write("Formula rows")
+        formula_rows = formula_issue_report_rows(
+            formula_warmup=formula_warmup,
+            formula_stable=formula_stable,
+            actual_warmup_distance=None,
+            actual_warmup_power_percent=None,
+            actual_stable_distance=None,
+            actual_stable_power_percent=None,
+        )[:2]
+        display_safe_dataframe(pd.DataFrame(formula_rows), width="stretch", hide_index=True)
+
+        st.write("Actual in-game rows")
+        actual_col1, actual_col2 = st.columns(2)
+        with actual_col1:
+            st.markdown("**Warm-up actual**")
+            actual_warmup_distance = st.number_input(
+                "Warm-up distance, m",
                 min_value=0.0,
                 value=0.0,
                 step=1.0,
-                key=f"{key_prefix}_observed_distance",
+                key=f"{key_prefix}_actual_warmup_distance",
             )
-        with col2:
-            observed_min_warmup_power_percent = st.number_input(
-                "Observed min warm-up power %",
+            actual_warmup_power_percent = st.number_input(
+                "Warm-up power %",
                 min_value=0.0,
                 max_value=100.0,
                 value=0.0,
                 step=1.0,
-                key=f"{key_prefix}_observed_min_warmup_power",
+                key=f"{key_prefix}_actual_warmup_power",
             )
-        with col3:
-            observed_stable_power_percent = st.number_input(
-                "Observed stable hold power %",
+        with actual_col2:
+            st.markdown("**Stable hold actual**")
+            actual_stable_distance = st.number_input(
+                "Stable distance, m",
+                min_value=0.0,
+                value=0.0,
+                step=1.0,
+                key=f"{key_prefix}_actual_stable_distance",
+            )
+            actual_stable_power_percent = st.number_input(
+                "Stable power %",
                 min_value=0.0,
                 max_value=100.0,
                 value=0.0,
                 step=1.0,
-                key=f"{key_prefix}_observed_stable_power",
+                key=f"{key_prefix}_actual_stable_power",
             )
 
-        default_observations = pd.DataFrame(
-            [
-                {"distance": None, "power_percent": None, "observation": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
-                {"distance": None, "power_percent": None, "observation": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
-                {"distance": None, "power_percent": None, "observation": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
-            ]
+        actual_rows = formula_issue_report_rows(
+            formula_warmup=None,
+            formula_stable=None,
+            actual_warmup_distance=_positive_or_none(actual_warmup_distance),
+            actual_warmup_power_percent=(
+                actual_warmup_power_percent if actual_warmup_power_percent >= 20 else None
+            ),
+            actual_stable_distance=_positive_or_none(actual_stable_distance),
+            actual_stable_power_percent=(
+                actual_stable_power_percent if actual_stable_power_percent >= 20 else None
+            ),
+        )[2:]
+        display_safe_dataframe(pd.DataFrame(actual_rows), width="stretch", hide_index=True)
+
+        st.caption(
+            "Saved calibration observations will include formula warm-up/stable rows and actual warm-up/stable rows. "
+            "Analytics counts only actual rows, so formula rows do not pollute real calibration attempts."
         )
 
-        edited_observations = st.data_editor(
-            default_observations,
-            num_rows="dynamic",
-            hide_index=True,
-            key=f"{key_prefix}_calibration_observations_table",
-            column_config={
-                "distance": st.column_config.NumberColumn("Distance, m", min_value=1.0, step=1.0),
-                "power_percent": st.column_config.NumberColumn("Power %", min_value=20.0, max_value=100.0, step=1.0),
-                "observation": st.column_config.SelectboxColumn(
-                    "Observation",
-                    options=list(CALIBRATION_OBSERVATION_OPTIONS.keys()),
-                    required=False,
-                ),
-                "beam_warmed": st.column_config.CheckboxColumn("Warmed"),
-                "held_stable": st.column_config.CheckboxColumn("Stable"),
-                "comment": st.column_config.TextColumn("Comment"),
-            },
-        )
+        observed_distance_candidates = [
+            value
+            for value in [actual_warmup_distance, actual_stable_distance]
+            if value and float(value) > 0
+        ]
+        observed_distance = float(observed_distance_candidates[0]) if observed_distance_candidates else 0.0
+        observed_min_warmup_power_percent = float(actual_warmup_power_percent or 0.0)
+        observed_stable_power_percent = float(actual_stable_power_percent or 0.0)
 
         calibration_comment = st.text_area(
             "Calibration comment",
-            placeholder="Example: helper says 20% at 15m should warm up, but real warm-up starts around 78%; stable hold around 81%.",
+            placeholder="Example: formula gave warm-up 88% / stable 100%, actual warm-up 68% / stable 67% at 15m.",
             height=80,
             key=f"{key_prefix}_calibration_comment",
         )
 
-    observations = _clean_calibration_observation_rows(edited_observations.to_dict("records"))
+        extra_rows_default = pd.DataFrame(
+            [
+                {
+                    "distance": None,
+                    "power_percent": None,
+                    "observation": "unknown",
+                    "observation_source": "actual",
+                    "observation_phase": "unknown",
+                    "beam_warmed": False,
+                    "held_stable": False,
+                    "comment": "",
+                },
+            ]
+        )
+        with st.expander("Extra calibration rows", expanded=False):
+            edited_observations = st.data_editor(
+                extra_rows_default,
+                num_rows="dynamic",
+                hide_index=True,
+                key=f"{key_prefix}_calibration_observations_table",
+                column_config={
+                    "distance": st.column_config.NumberColumn("Distance, m", min_value=1.0, step=1.0),
+                    "power_percent": st.column_config.NumberColumn("Power %", min_value=20.0, max_value=100.0, step=1.0),
+                    "observation": st.column_config.SelectboxColumn(
+                        "Observation",
+                        options=list(CALIBRATION_OBSERVATION_OPTIONS.keys()),
+                        required=False,
+                    ),
+                    "observation_source": st.column_config.SelectboxColumn(
+                        "Source",
+                        options=["actual", "formula"],
+                        required=False,
+                    ),
+                    "observation_phase": st.column_config.SelectboxColumn(
+                        "Phase",
+                        options=["unknown", "warmup", "stable"],
+                        required=False,
+                    ),
+                    "beam_warmed": st.column_config.CheckboxColumn("Warmed"),
+                    "held_stable": st.column_config.CheckboxColumn("Stable"),
+                    "comment": st.column_config.TextColumn("Comment"),
+                },
+            )
+    else:
+        with st.expander("Add calibration observations", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                observed_distance = st.number_input(
+                    "Observed distance, m",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    key=f"{key_prefix}_observed_distance",
+                )
+            with col2:
+                observed_min_warmup_power_percent = st.number_input(
+                    "Observed min warm-up power %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=0.0,
+                    step=1.0,
+                    key=f"{key_prefix}_observed_min_warmup_power",
+                )
+            with col3:
+                observed_stable_power_percent = st.number_input(
+                    "Observed stable hold power %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=0.0,
+                    step=1.0,
+                    key=f"{key_prefix}_observed_stable_power",
+                )
+
+            default_observations = pd.DataFrame(
+                [
+                    {"distance": None, "power_percent": None, "observation": "unknown", "observation_source": "actual", "observation_phase": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
+                    {"distance": None, "power_percent": None, "observation": "unknown", "observation_source": "actual", "observation_phase": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
+                    {"distance": None, "power_percent": None, "observation": "unknown", "observation_source": "actual", "observation_phase": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
+                ]
+            )
+
+            edited_observations = st.data_editor(
+                default_observations,
+                num_rows="dynamic",
+                hide_index=True,
+                key=f"{key_prefix}_calibration_observations_table",
+                column_config={
+                    "distance": st.column_config.NumberColumn("Distance, m", min_value=1.0, step=1.0),
+                    "power_percent": st.column_config.NumberColumn("Power %", min_value=20.0, max_value=100.0, step=1.0),
+                    "observation": st.column_config.SelectboxColumn(
+                        "Observation",
+                        options=list(CALIBRATION_OBSERVATION_OPTIONS.keys()),
+                        required=False,
+                    ),
+                    "observation_source": st.column_config.SelectboxColumn(
+                        "Source",
+                        options=["actual", "formula"],
+                        required=False,
+                    ),
+                    "observation_phase": st.column_config.SelectboxColumn(
+                        "Phase",
+                        options=["unknown", "warmup", "stable"],
+                        required=False,
+                    ),
+                    "beam_warmed": st.column_config.CheckboxColumn("Warmed"),
+                    "held_stable": st.column_config.CheckboxColumn("Stable"),
+                    "comment": st.column_config.TextColumn("Comment"),
+                },
+            )
+
+            calibration_comment = st.text_area(
+                "Calibration comment",
+                placeholder="Example: 20% at 15m did not warm up; stable hold around 81%.",
+                height=80,
+                key=f"{key_prefix}_calibration_comment",
+            )
+
+    observations = []
+    if formula_issue_flag:
+        observations.extend(
+            row
+            for row in [
+                formula_candidate_to_observation(getattr(recommendation, "minimum_warmup", None), phase="warmup"),
+                formula_candidate_to_observation(getattr(recommendation, "stable_hold", None), phase="stable"),
+                actual_power_to_observation(
+                    distance=_positive_or_none(actual_warmup_distance),
+                    power_percent=(actual_warmup_power_percent if actual_warmup_power_percent >= 20 else None),
+                    phase="warmup",
+                ),
+                actual_power_to_observation(
+                    distance=_positive_or_none(actual_stable_distance),
+                    power_percent=(actual_stable_power_percent if actual_stable_power_percent >= 20 else None),
+                    phase="stable",
+                ),
+            ]
+            if row is not None
+        )
+
+    if not edited_observations.empty:
+        observations.extend(_clean_calibration_observation_rows(edited_observations.to_dict("records")))
 
     return CalibrationFeedback(
         formula_issue_flag=formula_issue_flag,
@@ -799,22 +1056,62 @@ def render_calibration_form(key_prefix: str = "calculator") -> CalibrationFeedba
         observations=observations,
     )
 
-def render_power_distance_helper(calc_input, heads, modules) -> None:
+
+def render_power_distance_limit_hint(recommendation) -> None:
+    best = recommendation.best_available
+    if best is None:
+        return
+
+    if recommendation.limiting_reason == "not_enough_max_power":
+        shortfall = abs(best.margin)
+        multiplier = recommendation.required_multiplier or 0.0
+        st.error(
+            "Current build cannot reach the required raw power in the scanned range. "
+            f"Best scanned pair is {best.distance:.0f}m / {best.power_percent:.0f}%: "
+            f"delivered {best.effective_power:.0f} vs required {best.required_power:.0f}. "
+            f"Shortfall: {shortfall:.0f}. Needed delivered-power multiplier: ~{multiplier:.2f}x."
+        )
+        st.caption(
+            "Meaning: this is not a missing helper value. The formula says the current build is underpowered for this rock. "
+            "Practical options: enable active power modules if they are installed, install stronger modules/head, use a stronger ship/second beam, or skip the rock."
+        )
+    elif recommendation.limiting_reason == "enough_power_but_no_safe_pair":
+        st.warning(
+            "Formula found enough raw power somewhere in the scan range, but every pair was filtered out as too risky or outside the stable band."
+        )
+        st.caption(
+            f"Best raw-power pair: {best.distance:.0f}m / {best.power_percent:.0f}% "
+            f"with margin {best.margin:.0f} and risk {best.risk_score:.3f}. Record the actual warm-up/stable result for calibration."
+        )
+    elif recommendation.limiting_reason == "no_safe_warmup_pair":
+        st.warning(
+            "No warm-up pair passed the safety filter. There may be enough power, but the current model marks the available pairs as unstable/risky."
+        )
+    elif recommendation.limiting_reason == "no_stable_hold_pair":
+        st.warning(
+            "Warm-up is possible, but no stable-hold pair was found in the current stability band. Treat the warm-up hint as experimental and record actual stable power."
+        )
+
+
+def render_power_distance_helper(calc_input, heads, modules):
     st.subheader("Power / distance helper")
     st.caption(
-        "Formula-based scan for the selected rock/build. It searches 10-120m and 20-100% power and intentionally ignores the current beam power slider, because the helper itself recommends power."
+        "Formula-based hint for the selected rock/build. It scans power around the current distance instead of using the current beam slider value. "
+        "If the helper returns no pair, the diagnostic below explains whether the build is underpowered or the pairs were rejected as risky."
     )
 
     recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
 
     if recommendation.scanned_count == 0:
         st.info(recommendation.note)
-        return
+        return recommendation
+
+    render_power_distance_limit_hint(recommendation)
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("**Minimum warm-up**")
+        st.markdown("**Minimum warm-up / move-back hint**")
         if recommendation.minimum_warmup is None:
             st.warning("No safe warm-up pair found in scan range.")
         else:
@@ -826,9 +1123,9 @@ def render_power_distance_helper(calc_input, heads, modules) -> None:
             )
 
     with col2:
-        st.markdown("**Recommended stable hold**")
+        st.markdown("**Recommended stable hold near current distance**")
         if recommendation.stable_hold is None:
-            st.warning("No stable hold pair found in scan range.")
+            st.warning("No stable hold pair found near the current distance.")
         else:
             candidate = recommendation.stable_hold
             st.metric("Scan distance, m", f"{candidate.distance:.0f} m")
@@ -841,9 +1138,14 @@ def render_power_distance_helper(calc_input, heads, modules) -> None:
         st.json({
             "minimum_warmup": recommendation.minimum_warmup.__dict__ if recommendation.minimum_warmup else None,
             "stable_hold": recommendation.stable_hold.__dict__ if recommendation.stable_hold else None,
+            "best_available": recommendation.best_available.__dict__ if recommendation.best_available else None,
+            "limiting_reason": recommendation.limiting_reason,
+            "required_multiplier": recommendation.required_multiplier,
             "scanned_count": recommendation.scanned_count,
             "note": recommendation.note,
         })
+
+    return recommendation
 
 def render_run_context_sidebar() -> RunContext:
     """Return default run metadata without adding extra UI controls.
@@ -1185,7 +1487,7 @@ def render_refinery_update_queue(df: pd.DataFrame) -> None:
             column_config={
                 "resource_name": st.column_config.SelectboxColumn(
                     "Resource",
-                    options=resource_options,
+                    options=FALLBACK_RESOURCE_OPTIONS,
                     required=False,
                 ),
                 "refined_scu_actual": st.column_config.NumberColumn(
@@ -1266,9 +1568,9 @@ def _build_calibration_editor_defaults(selected_row: pd.Series) -> pd.DataFrame:
 
     return pd.DataFrame(
         [
-            {"distance": None, "power_percent": None, "observation": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
-            {"distance": None, "power_percent": None, "observation": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
-            {"distance": None, "power_percent": None, "observation": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
+            {"distance": None, "power_percent": None, "observation": "unknown", "observation_source": "actual", "observation_phase": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
+            {"distance": None, "power_percent": None, "observation": "unknown", "observation_source": "actual", "observation_phase": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
+            {"distance": None, "power_percent": None, "observation": "unknown", "observation_source": "actual", "observation_phase": "unknown", "beam_warmed": False, "held_stable": False, "comment": ""},
         ]
     )
 
@@ -1385,6 +1687,16 @@ def render_calibration_update_queue(df: pd.DataFrame) -> None:
                 "observation": st.column_config.SelectboxColumn(
                     "Observation",
                     options=list(CALIBRATION_OBSERVATION_OPTIONS.keys()),
+                    required=False,
+                ),
+                "observation_source": st.column_config.SelectboxColumn(
+                    "Source",
+                    options=["actual", "formula"],
+                    required=False,
+                ),
+                "observation_phase": st.column_config.SelectboxColumn(
+                    "Phase",
+                    options=["unknown", "warmup", "stable"],
                     required=False,
                 ),
                 "beam_warmed": st.column_config.CheckboxColumn("Warmed"),
@@ -2498,14 +2810,17 @@ def render_calculator_tab(
     st.markdown("### Step 3 — Formula result / helper")
     render_result_metrics(result)
 
-    render_power_distance_helper(calc_input, heads=heads, modules=modules)
+    power_distance_recommendation = render_power_distance_helper(calc_input, heads=heads, modules=modules)
 
     ml_comparison = render_calculator_ml_comparison(calc_input, result, key_prefix=key_prefix)
 
     outcome = render_outcome_form(key_prefix=key_prefix)
     resource_yield = render_resource_yield_form(resource_profiles=resource_profiles, key_prefix=key_prefix)
     refinery = render_refinery_form(key_prefix=key_prefix)
-    calibration = render_calibration_form(key_prefix=key_prefix)
+    calibration = render_calibration_form(
+        key_prefix=key_prefix,
+        recommendation=power_distance_recommendation,
+    )
 
     st.markdown("### Step 7 — Save event")
 

@@ -63,3 +63,25 @@ def test_recommendation_scan_input_uses_build_slots_when_no_beam_enabled():
     assert len(scan_input.beams) == len(build.heads)
     assert {beam.slot for beam in scan_input.beams} == {head.slot for head in build.heads}
     assert all(beam.power_percent == 20 for beam in scan_input.beams)
+
+
+def test_recommendation_explains_when_current_build_is_underpowered():
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
+
+    calc_input = CalculationInput(
+        rock=RockInput(mass=50000, resistance=0.0, instability=0.1, distance=15),
+        build=build,
+        beams=[BeamState(slot="main", power_percent=100)],
+    )
+
+    recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
+
+    assert recommendation.minimum_warmup is None
+    assert recommendation.stable_hold is None
+    assert recommendation.best_available is not None
+    assert recommendation.best_available.margin < 0
+    assert recommendation.limiting_reason == "not_enough_max_power"
+    assert recommendation.required_multiplier is not None
+    assert recommendation.required_multiplier > 1.0

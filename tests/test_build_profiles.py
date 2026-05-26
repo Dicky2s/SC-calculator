@@ -78,7 +78,7 @@ def test_rieger_and_torrent_presets_are_calculable(heads, modules):
         mass=25000,
         resistance=0.28,
         instability=0.18,
-        distance=90,
+        distance=35,
     )
 
     for build_name in [
@@ -101,4 +101,4 @@ def test_rieger_and_torrent_presets_are_calculable(heads, modules):
 
         assert result.required_power > 0
         assert result.effective_power > 0
-        assert result.verdict in {"take", "risky", "skip", "need_more_power"}
+        assert result.verdict in {"take", "edge_take", "almost", "risky", "skip", "need_more_power"}

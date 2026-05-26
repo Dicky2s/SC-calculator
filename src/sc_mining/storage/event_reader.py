@@ -211,11 +211,43 @@ def _sum_numeric(rows: list[dict], key: str) -> float | None:
 
 
 
+def _should_infer_legacy_formula_issue_sources(calibration: dict, observations: list[dict]) -> bool:
+    """Detect one legacy manual pattern before source/phase fields existed.
+
+    Some early formula-issue reports stored four rows in one table: first two
+    formula/helper rows, then two actual in-game rows. Use a conservative comment
+    marker check so ordinary calibration attempts remain actual rows.
+    """
+
+    if not bool(calibration.get("formula_issue_flag", False)):
+        return False
+    if len(observations) < 4:
+        return False
+    if any("observation_source" in row for row in observations):
+        return False
+
+    comment = str(calibration.get("comment", "") or "").lower()
+    has_formula_marker = any(marker in comment for marker in ["formula", "helper", "дало", "дала"] )
+    has_actual_marker = any(marker in comment for marker in ["actual", "реально", "актуаль", "как есть"] )
+
+    return has_formula_marker and has_actual_marker
+
+
+def _legacy_formula_issue_source_and_phase(index: int, infer_split: bool) -> tuple[str, str]:
+    if not infer_split:
+        return "actual", "unknown"
+
+    source = "formula" if index < 2 else "actual"
+    phase = "warmup" if index % 2 == 0 else "stable"
+    return source, phase
+
+
 def _valid_calibration_observation_rows(calibration: dict) -> list[dict]:
     observations = calibration.get("observations") or []
     valid: list[dict] = []
+    infer_legacy_split = _should_infer_legacy_formula_issue_sources(calibration, observations)
 
-    for row in observations:
+    for index, row in enumerate(observations):
         distance = row.get("distance")
         power_percent = row.get("power_percent")
         observation = str(row.get("observation", "unknown") or "unknown")
@@ -227,11 +259,15 @@ def _valid_calibration_observation_rows(calibration: dict) -> list[dict]:
             if observation == "unknown" and not comment.strip():
                 continue
 
+        inferred_source, inferred_phase = _legacy_formula_issue_source_and_phase(index, infer_legacy_split)
+
         valid.append(
             {
                 "distance": distance,
                 "power_percent": power_percent,
                 "observation": observation,
+                "observation_source": row.get("observation_source", inferred_source) or inferred_source,
+                "observation_phase": row.get("observation_phase", inferred_phase) or inferred_phase,
                 "beam_warmed": beam_warmed,
                 "held_stable": held_stable,
                 "comment": comment,
@@ -241,8 +277,24 @@ def _valid_calibration_observation_rows(calibration: dict) -> list[dict]:
     return valid
 
 
+def _actual_observation_rows(rows: list[dict]) -> list[dict]:
+    """Return real in-game calibration observations only.
+
+    Formula/helper rows can be stored in the same observations list for side-by-side
+    debugging, but analytics counts should not treat formula recommendations as
+    real calibration attempts. Old rows without observation_source are actual rows.
+    """
+
+    return [
+        row
+        for row in rows
+        if str(row.get("observation_source", "actual") or "actual") == "actual"
+    ]
+
+
 def _count_observations(rows: list[dict], observation: str) -> int:
-    return sum(1 for row in rows if row.get("observation") == observation)
+    actual_rows = _actual_observation_rows(rows)
+    return sum(1 for row in actual_rows if row.get("observation") == observation)
 
 def flatten_event(event: dict) -> dict:
     build = event.get("build", {})
@@ -338,7 +390,7 @@ def flatten_event(event: dict) -> dict:
         "observed_stable_power_percent": calibration.get("observed_stable_power_percent"),
         "observed_distance": calibration.get("observed_distance"),
         "calibration_comment": calibration.get("comment", ""),
-        "calibration_attempt_count": len(calibration_observations),
+        "calibration_attempt_count": len(_actual_observation_rows(calibration_observations)),
         "calibration_no_warmup_count": _count_observations(calibration_observations, "no_warmup"),
         "calibration_warmup_count": _count_observations(calibration_observations, "warmup"),
         "calibration_stable_hold_count": _count_observations(calibration_observations, "stable_hold"),

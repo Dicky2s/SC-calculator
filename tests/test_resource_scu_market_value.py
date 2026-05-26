@@ -37,3 +37,10 @@ def test_resource_name_normalization_for_prices():
 
     assert normalize_resource_name("Titanium") == "titanium"
     assert get_resource_price("Titanium", prices) == 481
+
+
+def test_inert_materials_alias_uses_inert_material_price():
+    prices = {"inert_material": 0}
+
+    assert normalize_resource_name("inert_materials") == "inert_material"
+    assert get_resource_price("inert_materials", prices) == 0

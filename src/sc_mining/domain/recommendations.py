@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from sc_mining.domain.calculator import calculate
+from sc_mining.domain.calculator import calculate, find_head_build, head_max_range
 from sc_mining.domain.models import (
     BeamState,
     CalculationInput,
@@ -30,6 +30,9 @@ class PowerDistanceRecommendation:
     stable_hold: PowerDistanceCandidate | None
     scanned_count: int
     note: str
+    best_available: PowerDistanceCandidate | None
+    limiting_reason: str
+    required_multiplier: float | None
 
 
 def _candidate_to_dict(candidate: PowerDistanceCandidate | None) -> dict | None:
@@ -40,8 +43,11 @@ def recommendation_to_dict(recommendation: PowerDistanceRecommendation) -> dict:
     return {
         "minimum_warmup": _candidate_to_dict(recommendation.minimum_warmup),
         "stable_hold": _candidate_to_dict(recommendation.stable_hold),
+        "best_available": _candidate_to_dict(recommendation.best_available),
         "scanned_count": recommendation.scanned_count,
         "note": recommendation.note,
+        "limiting_reason": recommendation.limiting_reason,
+        "required_multiplier": recommendation.required_multiplier,
     }
 
 
@@ -69,6 +75,28 @@ def _with_candidate_power_and_distance(
     )
 
 
+def _max_valid_scan_distance(
+    calc_input: CalculationInput,
+    heads: dict[str, HeadConfig],
+    requested_max_distance: int,
+) -> int:
+    """Cap recommendation scans to the shortest max range among scanned heads."""
+
+    if not calc_input.beams:
+        return requested_max_distance
+
+    max_ranges: list[float] = []
+    for beam in calc_input.beams:
+        head_build = find_head_build(calc_input.build, beam.slot)
+        if head_build.head_id in heads:
+            max_ranges.append(head_max_range(heads[head_build.head_id]))
+
+    if not max_ranges:
+        return requested_max_distance
+
+    return int(min(float(requested_max_distance), min(max_ranges)))
+
+
 def scan_power_distance_grid(
     calc_input: CalculationInput,
     heads: dict[str, HeadConfig],
@@ -91,15 +119,19 @@ def scan_power_distance_grid(
         return []
 
     candidates: list[PowerDistanceCandidate] = []
+    capped_max_distance = _max_valid_scan_distance(calc_input, heads, max_distance)
 
-    for distance in range(min_distance, max_distance + 1, distance_step):
+    for distance in range(min_distance, capped_max_distance + 1, distance_step):
         for power in range(min_power, max_power + 1, power_step):
             candidate_input = _with_candidate_power_and_distance(
                 calc_input=calc_input,
                 distance=float(distance),
                 power_percent=float(power),
             )
-            result = calculate(candidate_input, heads=heads, modules=modules)
+            try:
+                result = calculate(candidate_input, heads=heads, modules=modules)
+            except ValueError:
+                continue
             margin_ratio = result.margin / max(result.required_power, 1.0)
             candidates.append(
                 PowerDistanceCandidate(
@@ -156,8 +188,8 @@ def choose_stable_hold(candidates: list[PowerDistanceCandidate]) -> PowerDistanc
         candidate
         for candidate in candidates
         if 0.03 <= candidate.margin_ratio <= 0.25
-        and candidate.risk_score < 0.45
-        and candidate.verdict == "take"
+        and candidate.risk_score < 0.55
+        and candidate.verdict in {"take", "edge_take"}
     ]
     if not valid:
         fallback = [
@@ -232,18 +264,43 @@ def build_power_distance_recommendation(
             stable_hold=None,
             scanned_count=0,
             note="No enabled beams; enable at least one beam to calculate recommendations.",
+            best_available=None,
+            limiting_reason="no_enabled_beams",
+            required_multiplier=None,
         )
 
     minimum = choose_minimum_warmup(candidates)
     stable = choose_stable_hold(candidates)
+    best_available = max(
+        candidates,
+        key=lambda candidate: (candidate.effective_power, candidate.margin, -candidate.distance),
+    )
+
+    limiting_reason = "ok"
+    required_multiplier = None
+    if best_available.margin < 0:
+        limiting_reason = "not_enough_max_power"
+        required_multiplier = round(
+            best_available.required_power / max(best_available.effective_power, 1.0),
+            3,
+        )
+    elif minimum is None and stable is None:
+        limiting_reason = "enough_power_but_no_safe_pair"
+    elif minimum is None:
+        limiting_reason = "no_safe_warmup_pair"
+    elif stable is None:
+        limiting_reason = "no_stable_hold_pair"
 
     return PowerDistanceRecommendation(
         minimum_warmup=minimum,
         stable_hold=stable,
         scanned_count=len(candidates),
         note=(
-            "Heuristic helper: scans 10-120m and 20-100% power using the selected "
-            "build and active modules. It deliberately ignores the current UI power slider, "
+            "Heuristic helper: scans valid head range and 20-100% power using the selected "
+            "build and active modules. It deliberately ignores the current UI power slider. "
             "Use as a starting hint, then calibrate with real outcomes."
         ),
+        best_available=best_available,
+        limiting_reason=limiting_reason,
+        required_multiplier=required_multiplier,
     )
