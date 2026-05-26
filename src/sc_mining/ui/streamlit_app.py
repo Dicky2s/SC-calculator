@@ -9,7 +9,7 @@ import streamlit as st
 
 from sc_mining.domain.calculator import calculate
 from sc_mining.domain.recommendations import build_power_distance_recommendation
-from sc_mining.domain.config_loader import load_build, load_heads, load_modules
+from sc_mining.domain.config_loader import load_build, load_heads, load_modules, load_resources
 from sc_mining.dataset.exporter import build_dataset, export_dataset, get_dataset_export_summary
 from sc_mining.dataset.analytics import (
     build_basic_analytics_report,
@@ -146,7 +146,7 @@ CALIBRATION_OBSERVATION_OPTIONS = {
     "too_slow": "Too slow — technically works but too slow",
 }
 
-FALLBACK_RESOURCE_OPTIONS = [
+RESOURCE_OPTIONS = [
     "unknown",
     "agricium",
     "aluminum",
@@ -175,7 +175,7 @@ FALLBACK_RESOURCE_OPTIONS = [
 
 def resource_options_from_profiles(resource_profiles: dict) -> list[str]:
     if not resource_profiles:
-        return FALLBACK_RESOURCE_OPTIONS
+        return RESOURCE_OPTIONS
     options = ["unknown"]
     options.extend(sorted(resource_profiles.keys()))
     if "other" not in options:
@@ -635,17 +635,7 @@ def render_refinery_form(key_prefix: str = "calculator") -> RefineryFeedback:
                     min_value=0.0,
                     step=1000.0,
                 ),
-                "observed_window_size": st.column_config.SelectboxColumn(
-                "Observed window",
-                options=["unknown", "tiny", "small", "normal", "wide"],
-                help="Optional manual observation: how narrow/comfortable the green window felt.",
-            ),
-            "observed_charge_behavior": st.column_config.SelectboxColumn(
-                "Charge behavior",
-                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
-                help="Optional manual observation of laser/charge behavior.",
-            ),
-            "comment": st.column_config.TextColumn("Comment"),
+                "comment": st.column_config.TextColumn("Comment"),
             },
         )
 
@@ -783,17 +773,7 @@ def render_calibration_form(key_prefix: str = "calculator") -> CalibrationFeedba
                 ),
                 "beam_warmed": st.column_config.CheckboxColumn("Warmed"),
                 "held_stable": st.column_config.CheckboxColumn("Stable"),
-                "observed_window_size": st.column_config.SelectboxColumn(
-                "Observed window",
-                options=["unknown", "tiny", "small", "normal", "wide"],
-                help="Optional manual observation: how narrow/comfortable the green window felt.",
-            ),
-            "observed_charge_behavior": st.column_config.SelectboxColumn(
-                "Charge behavior",
-                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
-                help="Optional manual observation of laser/charge behavior.",
-            ),
-            "comment": st.column_config.TextColumn("Comment"),
+                "comment": st.column_config.TextColumn("Comment"),
             },
         )
 
@@ -1218,17 +1198,7 @@ def render_refinery_update_queue(df: pd.DataFrame) -> None:
                     min_value=0.0,
                     step=1000.0,
                 ),
-                "observed_window_size": st.column_config.SelectboxColumn(
-                "Observed window",
-                options=["unknown", "tiny", "small", "normal", "wide"],
-                help="Optional manual observation: how narrow/comfortable the green window felt.",
-            ),
-            "observed_charge_behavior": st.column_config.SelectboxColumn(
-                "Charge behavior",
-                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
-                help="Optional manual observation of laser/charge behavior.",
-            ),
-            "comment": st.column_config.TextColumn("Comment"),
+                "comment": st.column_config.TextColumn("Comment"),
             },
         )
 
@@ -1419,17 +1389,7 @@ def render_calibration_update_queue(df: pd.DataFrame) -> None:
                 ),
                 "beam_warmed": st.column_config.CheckboxColumn("Warmed"),
                 "held_stable": st.column_config.CheckboxColumn("Stable"),
-                "observed_window_size": st.column_config.SelectboxColumn(
-                "Observed window",
-                options=["unknown", "tiny", "small", "normal", "wide"],
-                help="Optional manual observation: how narrow/comfortable the green window felt.",
-            ),
-            "observed_charge_behavior": st.column_config.SelectboxColumn(
-                "Charge behavior",
-                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
-                help="Optional manual observation of laser/charge behavior.",
-            ),
-            "comment": st.column_config.TextColumn("Comment"),
+                "comment": st.column_config.TextColumn("Comment"),
             },
         )
 
@@ -3080,6 +3040,7 @@ def main() -> None:
 
     heads = load_heads(CONFIG_DIR / "heads.yaml")
     modules = load_modules(CONFIG_DIR / "modules.yaml")
+    resource_profiles = load_resources(RESOURCES_CONFIG)
 
     build_files = list_build_files()
     if not build_files:
@@ -3144,6 +3105,7 @@ def main() -> None:
         render_calculator_tab(
             heads=heads,
             modules=modules,
+            resource_profiles=resource_profiles,
             build=build,
             session_id=session_id,
             run_context=run_context,
