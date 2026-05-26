@@ -215,6 +215,16 @@ def display_safe_dataframe(df: pd.DataFrame, **kwargs) -> None:
     st.dataframe(make_arrow_safe_dataframe(df), **kwargs)
 
 
+def scan_percent_to_fraction(value: float) -> float:
+    """Convert scan/UI percent values to 0..1 calculator fractions."""
+    return max(0.0, min(float(value) / 100.0, 1.0))
+
+
+def percent_to_fraction(value: float) -> float:
+    """Backward-compatible alias for older UI code."""
+    return scan_percent_to_fraction(value)
+
+
 def render_result_metrics(result) -> None:
     metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
 
@@ -2296,7 +2306,10 @@ def render_calculator_tab(
     page_title: str = "Scan capture",
 ) -> None:
     st.subheader(page_title)
-    st.caption("Enter values in the same shape as the in-game scan: Mass, Resistance, Instability, Distance, and Composition SCU below.")
+    st.caption(
+        "Enter scan values as displayed in game. Resistance and Instability are percentages in the UI, "
+        "but are converted to 0..1 fractions before calculation and storage."
+    )
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -2310,33 +2323,45 @@ def render_calculator_tab(
         )
 
     with col2:
-        resistance = st.number_input(
-            "Resistance (%)",
+        resistance_percent = st.number_input(
+            "Resistance, %",
             min_value=0.0,
-            value=0.34,
+            max_value=100.0,
+            value=0.0,
             step=0.01,
             format="%.2f",
-            key=f"{key_prefix}_resistance",
+            key=f"{key_prefix}_resistance_percent",
+            help="Use the scan value as shown in game. Example: 34 means 34%, internally 0.34.",
         )
 
     with col3:
-        instability = st.number_input(
-            "Instability",
+        instability_percent = st.number_input(
+            "Instability, %",
             min_value=0.0,
-            value=0.12,
+            max_value=100.0,
+            value=18.5,
             step=0.01,
             format="%.2f",
-            key=f"{key_prefix}_instability",
+            key=f"{key_prefix}_instability_percent",
+            help="Use the scan value as shown in game. Example: 30 means 30%, internally 0.30.",
         )
 
     with col4:
         distance = st.number_input(
             "Scan distance, m",
             min_value=1.0,
-            value=92.0,
+            value=15.0,
             step=1.0,
             key=f"{key_prefix}_distance",
         )
+
+    resistance = scan_percent_to_fraction(resistance_percent)
+    instability = scan_percent_to_fraction(instability_percent)
+
+    st.caption(
+        f"Normalized for formula: resistance={resistance:.4f}, instability={instability:.4f}. "
+        "Example: scan 30% becomes 0.3000 inside the formula."
+    )
 
     st.subheader("Beam states")
 
