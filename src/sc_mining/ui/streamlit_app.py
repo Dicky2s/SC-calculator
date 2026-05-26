@@ -8,8 +8,6 @@ from sc_mining.ui.table_utils import make_arrow_safe_dataframe
 import streamlit as st
 
 from sc_mining.domain.calculator import calculate
-from sc_mining.domain.resource_prices import load_resource_price_config
-from sc_mining.domain.resource_math import build_resource_scu_preview_rows
 from sc_mining.domain.recommendations import build_power_distance_recommendation
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules
 from sc_mining.dataset.exporter import build_dataset, export_dataset, get_dataset_export_summary
@@ -148,29 +146,67 @@ CALIBRATION_OBSERVATION_OPTIONS = {
     "too_slow": "Too slow — technically works but too slow",
 }
 
-RESOURCE_OPTIONS = [
+FALLBACK_RESOURCE_OPTIONS = [
     "unknown",
-    "aluminum",
     "agricium",
+    "aluminum",
     "aslarite",
-    "bexalite",
     "beryl",
+    "bexalite",
     "borase",
     "copper",
+    "corundum",
     "diamond",
     "gold",
     "hephaestanite",
-    "inert_material",
+    "inert_materials",
     "iron",
     "laranite",
     "quantainium",
     "quartz",
+    "riccite",
     "taranite",
     "tin",
     "titanium",
     "tungsten",
     "other",
 ]
+
+
+def resource_options_from_profiles(resource_profiles: dict) -> list[str]:
+    if not resource_profiles:
+        return FALLBACK_RESOURCE_OPTIONS
+    options = ["unknown"]
+    options.extend(sorted(resource_profiles.keys()))
+    if "other" not in options:
+        options.append("other")
+    return list(dict.fromkeys(options))
+
+
+def resource_label(resource_id: str, resource_profiles: dict) -> str:
+    if resource_id == "unknown":
+        return "Unknown"
+    profile = resource_profiles.get(resource_id)
+    if profile:
+        return f"{profile.label} ({resource_id})"
+    return resource_id
+
+
+def resource_profile_rows(resource_profiles: dict) -> list[dict]:
+    rows = []
+    for resource_id, profile in sorted(resource_profiles.items()):
+        rows.append(
+            {
+                "resource_id": resource_id,
+                "label": profile.label,
+                "value_tier": profile.value_tier,
+                "difficulty_hint": profile.difficulty_hint,
+                "window_hint": profile.window_hint,
+                "category": profile.category,
+                "notes": profile.notes,
+            }
+        )
+    return rows
 
 
 def list_build_files() -> list[Path]:
@@ -202,10 +238,6 @@ def build_loadout_rows(build, modules: dict) -> list[dict]:
 def format_verdict(verdict: str) -> str:
     if verdict == "take":
         return "TAKE"
-    if verdict == "edge_take":
-        return "EDGE TAKE"
-    if verdict == "almost":
-        return "ALMOST"
     if verdict == "risky":
         return "RISKY"
     if verdict == "skip":
@@ -224,8 +256,12 @@ def display_safe_dataframe(df: pd.DataFrame, **kwargs) -> None:
 
 
 def scan_percent_to_fraction(value: float) -> float:
-    """Convert scan/UI percent values to 0..1 calculator fractions."""
-    return max(0.0, min(float(value) / 100.0, 1.0))
+    """Convert scan/UI percent values into calculator fractions.
+
+    Instability can be above 100% in game, for example 284.74% -> 2.8474.
+    Do not clamp the upper bound here.
+    """
+    return max(0.0, float(value) / 100.0)
 
 
 def percent_to_fraction(value: float) -> float:
@@ -244,7 +280,7 @@ def render_result_metrics(result) -> None:
 
 
 def render_outcome_form(key_prefix: str = "calculator") -> OutcomeFeedback:
-    st.subheader("Actual outcome")
+    st.markdown("### Step 5 — Outcome / observed behavior")
     st.caption(
         "Optional manual label. Use it after checking the rock in-game. "
         "This is the future ML target."
@@ -278,43 +314,23 @@ def _clean_resource_rows(rows: list[dict]) -> list[ResourceComponent]:
         resource_name = str(row.get("resource_name", "unknown") or "unknown")
         resource_percent = row.get("resource_percent")
         raw_scu_estimate = row.get("raw_scu_estimate")
+        observed_window_size = str(row.get("observed_window_size", "unknown") or "unknown")
+        observed_charge_behavior = str(row.get("observed_charge_behavior", "unknown") or "unknown")
         comment = str(row.get("comment", "") or "")
 
         percent_missing = resource_percent in (None, "") or pd.isna(resource_percent)
         raw_scu_missing = raw_scu_estimate in (None, "") or pd.isna(raw_scu_estimate)
 
-        percent_value = None if percent_missing else float(resource_percent)
-        raw_scu_value = None if raw_scu_missing else float(raw_scu_estimate)
-
-        # Drop untouched placeholder rows, including default 0% / 0 SCU rows.
-        if (
-            resource_name == "unknown"
-            and (percent_value is None or percent_value == 0.0)
-            and (raw_scu_value is None or raw_scu_value == 0.0)
-            and not comment.strip()
-        ):
+        if resource_name == "unknown" and percent_missing and raw_scu_missing and not comment.strip():
             continue
-
-        # Drop named accidental placeholders. Use inert_material if you want to
-        # intentionally capture inert/unknown share.
-        if (
-            resource_name != "inert_material"
-            and (percent_value is None or percent_value == 0.0)
-            and (raw_scu_value is None or raw_scu_value == 0.0)
-            and not comment.strip()
-        ):
-            continue
-
-        # If percent is present and Raw SCU is left as 0, treat Raw SCU as empty
-        # so it can be derived from Composition total SCU.
-        if raw_scu_value == 0.0 and percent_value and percent_value > 0:
-            raw_scu_value = None
 
         resources.append(
             ResourceComponent(
                 resource_name=resource_name,
-                resource_percent=percent_value,
-                raw_scu_estimate=raw_scu_value,
+                resource_percent=float(resource_percent) if not percent_missing else None,
+                raw_scu_estimate=float(raw_scu_estimate) if not raw_scu_missing else None,
+                observed_window_size=observed_window_size,
+                observed_charge_behavior=observed_charge_behavior,
                 comment=comment.strip(),
             )
         )
@@ -336,13 +352,14 @@ def _fill_resource_scu_from_total(resources: list[ResourceComponent], total_scu_
 
     filled: list[ResourceComponent] = []
     for item in resources:
-        raw_scu_missing = item.raw_scu_estimate is None or item.raw_scu_estimate <= 0
-        if raw_scu_missing and item.resource_percent is not None and item.resource_percent > 0:
+        if item.raw_scu_estimate is None and item.resource_percent is not None:
             filled.append(
                 ResourceComponent(
                     resource_name=item.resource_name,
                     resource_percent=item.resource_percent,
                     raw_scu_estimate=round(total_scu_estimate * item.resource_percent / 100.0, 3),
+                    observed_window_size=item.observed_window_size,
+                    observed_charge_behavior=item.observed_charge_behavior,
                     comment=item.comment,
                 )
             )
@@ -379,12 +396,13 @@ def _clean_refined_resource_rows(rows: list[dict]) -> list[RefinedResourceOutput
     return refined_resources
 
 
-def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldFeedback:
-    st.subheader("Scan composition / resources")
+def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calculator") -> ResourceYieldFeedback:
+    st.markdown("### Step 4 — Composition / resources")
     st.caption(
-        "Capture the same things you see on the mining scan: total composition size in SCU and one or more resource rows. "
-        "If you enter total SCU and percentages only, per-resource raw SCU is estimated automatically."
+        "Fill this directly from the scan composition block: total SCU and one row per resource. "
+        "Window/charge behavior can be marked per resource if you notice a pattern."
     )
+    resource_options = resource_options_from_profiles(resource_profiles)
 
     header_col1, header_col2 = st.columns(2)
     with header_col1:
@@ -401,9 +419,9 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
 
     default_resources = pd.DataFrame(
         [
-            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "comment": ""},
-            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "comment": ""},
-            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "comment": ""},
+            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
+            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
+            {"resource_name": "unknown", "resource_percent": 0.0, "raw_scu_estimate": 0.0, "observed_window_size": "unknown", "observed_charge_behavior": "unknown", "comment": ""},
         ]
     )
 
@@ -415,7 +433,7 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
         column_config={
             "resource_name": st.column_config.SelectboxColumn(
                 "Resource",
-                options=RESOURCE_OPTIONS,
+                options=resource_options,
                 required=False,
             ),
             "resource_percent": st.column_config.NumberColumn(
@@ -430,6 +448,16 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
                 step=0.01,
                 help="Optional. Leave empty/0 to derive from total composition SCU and scan %."
             ),
+            "observed_window_size": st.column_config.SelectboxColumn(
+                "Observed window",
+                options=["unknown", "tiny", "small", "normal", "wide"],
+                help="Optional manual observation: how narrow/comfortable the green window felt.",
+            ),
+            "observed_charge_behavior": st.column_config.SelectboxColumn(
+                "Charge behavior",
+                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
+                help="Optional manual observation of laser/charge behavior.",
+            ),
             "comment": st.column_config.TextColumn("Comment"),
         },
     )
@@ -438,36 +466,25 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
     total_scu_value = total_scu_estimate if total_scu_estimate > 0 else None
     resources = _fill_resource_scu_from_total(resources, total_scu_value)
 
-    derived_market_value_auec = None
-
     if resources:
-        price_config = load_resource_price_config()
-        preview_rows = build_resource_scu_preview_rows(
-            resources=resources,
-            total_scu_estimate=total_scu_value,
-            prices=price_config["prices"],
-        )
-        preview_df = pd.DataFrame(preview_rows)
+        preview_rows = [
+            {
+                "resource_name": item.resource_name,
+                "resource_percent": item.resource_percent,
+                "raw_scu_estimate": item.raw_scu_estimate,
+                "comment": item.comment,
+            }
+            for item in resources
+        ]
+        with st.expander("Derived resource preview", expanded=False):
+            display_safe_dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
 
-        st.write("Estimated SCU and processed market value")
-        st.caption(
-            f"Market prices: `{price_config['version']}` / `{price_config['unit']}`. "
-            "These are editable seed estimates in configs/resource_prices.yaml."
-        )
-        display_safe_dataframe(preview_df, width="stretch", hide_index=True)
-
-        total_row = preview_df[preview_df["resource_name"] == "TOTAL"]
-        if not total_row.empty:
-            total_percent_value = float(total_row.iloc[0]["scan_percent"])
-            total_value = total_row.iloc[0]["estimated_processed_value_auec"]
-            if pd.notna(total_value):
-                derived_market_value_auec = float(total_value)
-                st.metric("Estimated processed market value", f"{derived_market_value_auec:,.0f} aUEC")
-
-            if total_percent_value > 100.5:
-                st.warning(f"Resource scan percent total is {total_percent_value:.2f}%. Check duplicated/resource rows.")
-            elif total_percent_value < 99.5:
-                st.info(f"Resource scan percent total is {total_percent_value:.2f}%. Remaining share may be inert/unknown material.")
+    with st.expander("Resource profile reference", expanded=False):
+        profile_rows = resource_profile_rows(resource_profiles)
+        if profile_rows:
+            display_safe_dataframe(pd.DataFrame(profile_rows), width="stretch", hide_index=True)
+        else:
+            st.info("No resource profiles loaded.")
 
     resource_comment = st.text_area(
         "Mining/resource comment",
@@ -487,7 +504,7 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
         )
     with yield_col2:
         estimated_value_auec = st.number_input(
-            "Manual value override, aUEC",
+            "Estimated value before refinery, aUEC",
             min_value=0.0,
             value=0.0,
             step=1000.0,
@@ -510,7 +527,7 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
         raw_scu_estimate=raw_scu_estimate,
         total_scu_estimate=total_scu_value,
         refined_scu_estimate=None,
-        estimated_value_auec=estimated_value_auec if estimated_value_auec > 0 else derived_market_value_auec,
+        estimated_value_auec=estimated_value_auec if estimated_value_auec > 0 else None,
         mining_time_seconds=mining_time_seconds if mining_time_seconds > 0 else None,
         comment=resource_comment.strip(),
         resources=resources,
@@ -518,7 +535,7 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
 
 
 def render_refinery_form(key_prefix: str = "calculator") -> RefineryFeedback:
-    st.subheader("Refinery / future yield")
+    st.markdown("### Step 6 — Refinery / future yield")
     st.caption(
         "Optional separate block. Fill it now if known, or leave it empty and extend/update later when refinery data is available."
     )
@@ -605,7 +622,7 @@ def render_refinery_form(key_prefix: str = "calculator") -> RefineryFeedback:
             column_config={
                 "resource_name": st.column_config.SelectboxColumn(
                     "Resource",
-                    options=RESOURCE_OPTIONS,
+                    options=resource_options,
                     required=False,
                 ),
                 "refined_scu_actual": st.column_config.NumberColumn(
@@ -618,7 +635,17 @@ def render_refinery_form(key_prefix: str = "calculator") -> RefineryFeedback:
                     min_value=0.0,
                     step=1000.0,
                 ),
-                "comment": st.column_config.TextColumn("Comment"),
+                "observed_window_size": st.column_config.SelectboxColumn(
+                "Observed window",
+                options=["unknown", "tiny", "small", "normal", "wide"],
+                help="Optional manual observation: how narrow/comfortable the green window felt.",
+            ),
+            "observed_charge_behavior": st.column_config.SelectboxColumn(
+                "Charge behavior",
+                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
+                help="Optional manual observation of laser/charge behavior.",
+            ),
+            "comment": st.column_config.TextColumn("Comment"),
             },
         )
 
@@ -756,7 +783,17 @@ def render_calibration_form(key_prefix: str = "calculator") -> CalibrationFeedba
                 ),
                 "beam_warmed": st.column_config.CheckboxColumn("Warmed"),
                 "held_stable": st.column_config.CheckboxColumn("Stable"),
-                "comment": st.column_config.TextColumn("Comment"),
+                "observed_window_size": st.column_config.SelectboxColumn(
+                "Observed window",
+                options=["unknown", "tiny", "small", "normal", "wide"],
+                help="Optional manual observation: how narrow/comfortable the green window felt.",
+            ),
+            "observed_charge_behavior": st.column_config.SelectboxColumn(
+                "Charge behavior",
+                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
+                help="Optional manual observation of laser/charge behavior.",
+            ),
+            "comment": st.column_config.TextColumn("Comment"),
             },
         )
 
@@ -1168,7 +1205,7 @@ def render_refinery_update_queue(df: pd.DataFrame) -> None:
             column_config={
                 "resource_name": st.column_config.SelectboxColumn(
                     "Resource",
-                    options=RESOURCE_OPTIONS,
+                    options=resource_options,
                     required=False,
                 ),
                 "refined_scu_actual": st.column_config.NumberColumn(
@@ -1181,7 +1218,17 @@ def render_refinery_update_queue(df: pd.DataFrame) -> None:
                     min_value=0.0,
                     step=1000.0,
                 ),
-                "comment": st.column_config.TextColumn("Comment"),
+                "observed_window_size": st.column_config.SelectboxColumn(
+                "Observed window",
+                options=["unknown", "tiny", "small", "normal", "wide"],
+                help="Optional manual observation: how narrow/comfortable the green window felt.",
+            ),
+            "observed_charge_behavior": st.column_config.SelectboxColumn(
+                "Charge behavior",
+                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
+                help="Optional manual observation of laser/charge behavior.",
+            ),
+            "comment": st.column_config.TextColumn("Comment"),
             },
         )
 
@@ -1372,7 +1419,17 @@ def render_calibration_update_queue(df: pd.DataFrame) -> None:
                 ),
                 "beam_warmed": st.column_config.CheckboxColumn("Warmed"),
                 "held_stable": st.column_config.CheckboxColumn("Stable"),
-                "comment": st.column_config.TextColumn("Comment"),
+                "observed_window_size": st.column_config.SelectboxColumn(
+                "Observed window",
+                options=["unknown", "tiny", "small", "normal", "wide"],
+                help="Optional manual observation: how narrow/comfortable the green window felt.",
+            ),
+            "observed_charge_behavior": st.column_config.SelectboxColumn(
+                "Charge behavior",
+                options=["unknown", "stable", "jumping", "delayed", "overreactive", "not_warming", "overheating"],
+                help="Optional manual observation of laser/charge behavior.",
+            ),
+            "comment": st.column_config.TextColumn("Comment"),
             },
         )
 
@@ -2349,6 +2406,7 @@ def render_synthetic_dataset_block() -> pd.DataFrame:
 def render_calculator_tab(
     heads,
     modules,
+    resource_profiles,
     build,
     session_id: str,
     run_context: RunContext,
@@ -2357,10 +2415,8 @@ def render_calculator_tab(
     page_title: str = "Scan capture",
 ) -> None:
     st.subheader(page_title)
-    st.caption(
-        "Enter scan values as displayed in game. Resistance and Instability are percentages in the UI, "
-        "but are converted to 0..1 fractions before calculation and storage."
-    )
+    st.caption("Follow the page top-to-bottom while scanning a rock. Required first: scan values and build/beam state. Optional later: outcome/refinery/calibration.")
+    st.markdown("### Step 1 — Scan values")
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -2389,12 +2445,12 @@ def render_calculator_tab(
         instability_percent = st.number_input(
             "Instability, %",
             min_value=0.0,
-            max_value=100.0,
+            max_value=1000.0,
             value=18.5,
             step=0.01,
             format="%.2f",
             key=f"{key_prefix}_instability_percent",
-            help="Use the scan value as shown in game. Example: 30 means 30%, internally 0.30.",
+            help="Use the scan value as shown in game. Values above 100 are valid for impossible rocks. Example: 284.74 -> 2.8474 internally.",
         )
 
     with col4:
@@ -2411,10 +2467,10 @@ def render_calculator_tab(
 
     st.caption(
         f"Normalized for formula: resistance={resistance:.4f}, instability={instability:.4f}. "
-        "Example: scan 30% becomes 0.3000 inside the formula."
+        "Examples: scan 30% becomes 0.3000; scan 284.74% becomes 2.8474."
     )
 
-    st.subheader("Beam states")
+    st.markdown("### Step 2 — Beam states")
 
     beams: list[BeamState] = []
 
@@ -2479,7 +2535,7 @@ def render_calculator_tab(
 
     result = calculate(calc_input, heads=heads, modules=modules)
 
-    st.subheader("Result")
+    st.markdown("### Step 3 — Formula result / helper")
     render_result_metrics(result)
 
     render_power_distance_helper(calc_input, heads=heads, modules=modules)
@@ -2487,11 +2543,11 @@ def render_calculator_tab(
     ml_comparison = render_calculator_ml_comparison(calc_input, result, key_prefix=key_prefix)
 
     outcome = render_outcome_form(key_prefix=key_prefix)
-    resource_yield = render_resource_yield_form(key_prefix=key_prefix)
+    resource_yield = render_resource_yield_form(resource_profiles=resource_profiles, key_prefix=key_prefix)
     refinery = render_refinery_form(key_prefix=key_prefix)
     calibration = render_calibration_form(key_prefix=key_prefix)
 
-    st.subheader("Save event")
+    st.markdown("### Step 7 — Save event")
 
     col_save, col_path = st.columns([1, 3])
 

@@ -3,9 +3,6 @@ heads:
     name: "Helix S1"
     size: 1
     base_power: 1.00
-    max_power: 3150.0
-    optimal_range: 15.0
-    max_range: 45.0
     stability_modifier: 1.00
     optimal_window_modifier: 1.00
 
@@ -13,9 +10,6 @@ heads:
     name: "Hofstede S1"
     size: 1
     base_power: 0.85
-    max_power: 2677.5
-    optimal_range: 15.0
-    max_range: 45.0
     stability_modifier: 1.10
     optimal_window_modifier: 1.05
 
@@ -23,9 +17,6 @@ heads:
     name: "Lancet S1"
     size: 1
     base_power: 0.75
-    max_power: 2362.5
-    optimal_range: 15.0
-    max_range: 45.0
     stability_modifier: 1.25
     optimal_window_modifier: 1.15
 
@@ -33,9 +24,6 @@ heads:
     name: "Helix S2"
     size: 2
     base_power: 1.70
-    max_power: 5355.0
-    optimal_range: 15.0
-    max_range: 45.0
     stability_modifier: 1.00
     optimal_window_modifier: 1.00
 
@@ -43,9 +31,6 @@ heads:
     name: "Hofstede S2"
     size: 2
     base_power: 1.45
-    max_power: 4567.5
-    optimal_range: 15.0
-    max_range: 45.0
     stability_modifier: 1.10
     optimal_window_modifier: 1.05
 
@@ -53,9 +38,6 @@ heads:
     name: "Lancet S2"
     size: 2
     base_power: 1.30
-    max_power: 4095.0
-    optimal_range: 15.0
-    max_range: 45.0
     stability_modifier: 1.25
     optimal_window_modifier: 1.15
 
@@ -63,8 +45,5 @@ heads:
     name: "Pitman S1"
     size: 1
     base_power: 1.05
-    max_power: 3307.5
-    optimal_range: 15.0
-    max_range: 45.0
     stability_modifier: 1.05
     optimal_window_modifier: 1.10

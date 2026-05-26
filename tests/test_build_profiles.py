@@ -78,7 +78,7 @@ def test_rieger_and_torrent_presets_are_calculable(heads, modules):
         mass=25000,
         resistance=0.28,
         instability=0.18,
-        distance=30,
+        distance=90,
     )
 
     for build_name in [

@@ -32,7 +32,7 @@ def sample_event(event_id: str, actual_outcome: str = "unknown") -> dict:
             "mass": 12600,
             "resistance": 0.34,
             "instability": 0.12,
-            "distance": 30,
+            "distance": 92,
         },
         "beams": [
             {

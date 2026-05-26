@@ -50,7 +50,7 @@ modules:
   focus_iii:
     name: "Focus III"
     type: "passive"
-    power_modifier: 0.95
+    power_modifier: 0.94
     resistance_modifier: 1.00
     instability_modifier: 0.95
     optimal_window_modifier: 1.50
@@ -82,7 +82,7 @@ modules:
   rieger:
     name: "Rieger"
     type: "passive"
-    power_modifier: 1.10
+    power_modifier: 1.00
     resistance_modifier: 1.04
     instability_modifier: 1.00
     optimal_window_modifier: 1.06
@@ -90,7 +90,7 @@ modules:
   rieger_c2:
     name: "Rieger-C2"
     type: "passive"
-    power_modifier: 1.18
+    power_modifier: 1.00
     resistance_modifier: 1.05
     instability_modifier: 1.00
     optimal_window_modifier: 1.08
@@ -98,7 +98,7 @@ modules:
   rieger_c3:
     name: "Rieger-C3"
     type: "passive"
-    power_modifier: 1.25
+    power_modifier: 1.00
     resistance_modifier: 1.06
     instability_modifier: 1.00
     optimal_window_modifier: 1.10

@@ -23,7 +23,7 @@ def sample_event() -> dict:
             "margin": 9.289,
             "risk_score": 0.321,
             "verdict": "take",
-            "notes": ["Distance efficiency for main: distance=15.0, optimal=15.0, max=45.0, factor=1.000"],
+            "notes": ["Distance efficiency: distance=15.0, factor=1.667"],
         },
         "ml_prediction": {
             "model_available": True,

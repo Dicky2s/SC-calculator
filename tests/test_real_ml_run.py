@@ -17,7 +17,7 @@ def sample_event(index: int, actual_outcome: str) -> dict:
     mass = 9000 + index * 3500
     resistance = 0.15 + (index % 4) * 0.08
     instability = 0.03 + (index % 5) * 0.07
-    distance = 25 + (index % 6) * 3
+    distance = 70 + (index % 6) * 8
     required_power = round((mass / 1000) * (1 + resistance), 3)
     effective_power = round(required_power + (20 if is_good else -8), 3)
     margin = round(effective_power - required_power, 3)

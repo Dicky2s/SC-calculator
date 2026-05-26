@@ -1,8 +1,8 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 import yaml
 
-from sc_mining.domain.models import BuildProfile, HeadConfig, ModuleConfig
+from sc_mining.domain.models import BuildProfile, HeadConfig, ModuleConfig, ResourceProfile
 
 
 def load_yaml(path: str | Path) -> dict:
@@ -29,3 +29,7 @@ def load_modules(path: str | Path) -> dict[str, ModuleConfig]:
 def load_build(path: str | Path) -> BuildProfile:
     raw = load_yaml(path)
     return BuildProfile(**raw)
+
+def load_resources(path: str | Path = "configs/resources.yaml") -> dict[str, ResourceProfile]:
+    raw = load_yaml(path)
+    return {resource_id: ResourceProfile(**payload) for resource_id, payload in raw.items()}

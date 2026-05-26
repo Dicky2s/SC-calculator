@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 ModuleType = Literal["passive", "active"]
-Verdict = Literal["take", "edge_take", "almost", "risky", "skip", "need_more_power"]
+Verdict = Literal["take", "risky", "skip", "need_more_power"]
 OutcomeLabel = Literal[
     "unknown",
     "good",
@@ -25,23 +25,36 @@ PowerObservationLabel = Literal[
     "too_slow",
 ]
 
+ObservedWindowSize = Literal[
+    "unknown",
+    "tiny",
+    "small",
+    "normal",
+    "wide",
+]
+
+ObservedChargeBehavior = Literal[
+    "unknown",
+    "stable",
+    "jumping",
+    "delayed",
+    "overreactive",
+    "not_warming",
+    "overheating",
+]
+
 
 class RockInput(BaseModel):
     mass: float = Field(gt=0)
     resistance: float = Field(ge=0, le=1)
-    instability: float = Field(ge=0, le=1)
+    instability: float = Field(ge=0)
     distance: float = Field(gt=0)
 
 
 class HeadConfig(BaseModel):
     name: str
     size: int
-    # Backward-compatible normalized power kept for older configs.
-    # New calculator logic uses max_power when present.
     base_power: float
-    max_power: float | None = None
-    optimal_range: float = 15.0
-    max_range: float = 45.0
     stability_modifier: float = 1.0
     optimal_window_modifier: float = 1.0
 
@@ -53,6 +66,16 @@ class ModuleConfig(BaseModel):
     resistance_modifier: float = 1.0
     instability_modifier: float = 1.0
     optimal_window_modifier: float = 1.0
+
+
+class ResourceProfile(BaseModel):
+    label: str
+    aliases: list[str] = Field(default_factory=list)
+    category: str = "unknown"
+    value_tier: str = "unknown"
+    difficulty_hint: str = "unknown"
+    window_hint: str = "unknown"
+    notes: str = ""
 
 
 class HeadBuild(BaseModel):
@@ -104,6 +127,8 @@ class ResourceComponent(BaseModel):
     resource_name: str = "unknown"
     resource_percent: float | None = Field(default=None, ge=0, le=100)
     raw_scu_estimate: float | None = Field(default=None, ge=0)
+    observed_window_size: ObservedWindowSize = "unknown"
+    observed_charge_behavior: ObservedChargeBehavior = "unknown"
     comment: str = ""
 
 

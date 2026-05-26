@@ -21,7 +21,7 @@ def make_calculation():
             mass=5000,
             resistance=0.1,
             instability=0.05,
-            distance=30,
+            distance=80,
         ),
         build=build,
         beams=[

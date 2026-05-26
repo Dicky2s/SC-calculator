@@ -1,0 +1,201 @@
+# Resource profiles used by the capture UI and analytics.
+# Values are deliberately light-weight hints. Real formula/ML calibration should
+# come from your actual events and outcomes.
+
+agricium:
+  label: Agricium
+  aliases: ["agricium ore", "agricium raw"]
+  category: ship_mining
+  value_tier: high
+  difficulty_hint: medium_high
+  window_hint: small
+  notes: "High-value ship mineable. Validate by actual scan resistance/instability."
+
+aluminum:
+  label: Aluminum
+  aliases: ["aluminum ore"]
+  category: ship_mining
+  value_tier: low
+  difficulty_hint: low
+  window_hint: normal
+  notes: "Low-value common ore."
+
+aslarite:
+  label: Aslarite
+  aliases: ["aslarite raw", "aslarite ore"]
+  category: ship_mining
+  value_tier: unknown
+  difficulty_hint: unknown
+  window_hint: unknown
+  notes: "Added as a configurable placeholder for current/newer mineable data."
+
+beryl:
+  label: Beryl
+  aliases: ["beryl raw"]
+  category: ship_mining
+  value_tier: low_medium
+  difficulty_hint: medium
+  window_hint: small
+  notes: "Treat as a hint only. Actual resistance/instability should drive decisions."
+
+bexalite:
+  label: Bexalite
+  aliases: ["bexalite raw"]
+  category: ship_mining
+  value_tier: very_high
+  difficulty_hint: high
+  window_hint: small
+  notes: "High-value ore; collect outcome and window behavior carefully."
+
+borase:
+  label: Borase
+  aliases: ["borase ore"]
+  category: ship_mining
+  value_tier: high
+  difficulty_hint: medium_high
+  window_hint: small
+  notes: "High-value ship mineable."
+
+copper:
+  label: Copper
+  aliases: ["copper ore"]
+  category: ship_mining
+  value_tier: low
+  difficulty_hint: low
+  window_hint: normal
+  notes: "Common low-value ore."
+
+corundum:
+  label: Corundum
+  aliases: ["corundum raw"]
+  category: ship_mining
+  value_tier: low
+  difficulty_hint: low
+  window_hint: normal
+  notes: "Common low-value resource."
+
+diamond:
+  label: Diamond
+  aliases: ["diamond raw"]
+  category: ship_mining
+  value_tier: medium
+  difficulty_hint: medium
+  window_hint: normal
+  notes: "Common medium-value ship mineable."
+
+gold:
+  label: Gold
+  aliases: ["gold ore"]
+  category: ship_mining
+  value_tier: medium
+  difficulty_hint: medium
+  window_hint: normal
+  notes: "Useful for yield/profit analytics."
+
+hephaestanite:
+  label: Hephaestanite
+  aliases: ["hephaestanite raw"]
+  category: ship_mining
+  value_tier: medium_high
+  difficulty_hint: medium
+  window_hint: normal
+  notes: "Track scan behavior and refined value."
+
+inert_materials:
+  label: Inert Materials
+  aliases: ["inert", "inert material"]
+  category: waste
+  value_tier: none
+  difficulty_hint: none
+  window_hint: none
+  notes: "Non-valuable mass/composition component."
+
+iron:
+  label: Iron
+  aliases: ["iron ore"]
+  category: ship_mining
+  value_tier: low
+  difficulty_hint: low
+  window_hint: normal
+  notes: "Common low-value ore."
+
+laranite:
+  label: Laranite
+  aliases: ["laranite raw"]
+  category: ship_mining
+  value_tier: high
+  difficulty_hint: medium_high
+  window_hint: small
+  notes: "High-value resource. Track whether it is worth the effort."
+
+quantainium:
+  label: Quantainium
+  aliases: ["quantainium raw", "quant"]
+  category: ship_mining
+  value_tier: top
+  difficulty_hint: volatile
+  window_hint: tiny
+  notes: "Volatile/high-value resource. Treat ML/formula output conservatively until calibrated."
+
+quartz:
+  label: Quartz
+  aliases: ["quartz raw"]
+  category: ship_mining
+  value_tier: low
+  difficulty_hint: low
+  window_hint: normal
+  notes: "Low-value common resource."
+
+riccite:
+  label: Riccite
+  aliases: ["riccite raw", "riccite ore"]
+  category: ship_mining
+  value_tier: unknown
+  difficulty_hint: unknown
+  window_hint: unknown
+  notes: "Added as configurable placeholder for newer mineable data."
+
+taranite:
+  label: Taranite
+  aliases: ["taranite raw"]
+  category: ship_mining
+  value_tier: high
+  difficulty_hint: high
+  window_hint: small
+  notes: "High-value ship mineable."
+
+tin:
+  label: Tin
+  aliases: ["tin ore", "tin raw"]
+  category: ship_mining
+  value_tier: unknown
+  difficulty_hint: unknown
+  window_hint: unknown
+  notes: "Included because it appears in scan results/current data."
+
+titanium:
+  label: Titanium
+  aliases: ["titanium ore"]
+  category: ship_mining
+  value_tier: low_medium
+  difficulty_hint: low
+  window_hint: normal
+  notes: "Common resource; useful for yield baselines."
+
+tungsten:
+  label: Tungsten
+  aliases: ["tungsten ore"]
+  category: ship_mining
+  value_tier: low_medium
+  difficulty_hint: medium
+  window_hint: normal
+  notes: "Track scan stats; often not a primary target unless composition is strong."
+
+other:
+  label: Other / not listed
+  aliases: []
+  category: fallback
+  value_tier: unknown
+  difficulty_hint: unknown
+  window_hint: unknown
+  notes: "Use when the scan contains a resource missing from the config."

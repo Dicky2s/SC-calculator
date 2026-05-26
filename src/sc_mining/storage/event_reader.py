@@ -48,6 +48,10 @@ EVENT_COLUMNS = [
     "resource_comment",
     "resource_count",
     "resource_names",
+    "dominant_resource_window_hint",
+    "dominant_resource_charge_behavior",
+    "resource_window_behaviors",
+    "resource_charge_behaviors",
     "total_resource_percent",
     "resources_json",
     "refinery_method",
@@ -115,42 +119,17 @@ def read_jsonl(path: str | Path) -> list[dict]:
     return records
 
 
-def _number_or_none(value) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _valid_resource_rows(resource_yield: dict) -> list[dict]:
-    """Return aggregated resource rows with derived SCU when possible.
-
-    The scan UI can enter the same material more than once and often leaves Raw
-    SCU at 0 while total composition SCU + percent are known. For analytics/ML
-    we aggregate by resource name and fill missing/zero SCU values from:
-
-        total_scu_estimate * resource_percent / 100
-    """
-
     resources = resource_yield.get("resources") or []
-    total_scu = _number_or_none(resource_yield.get("total_scu_estimate"))
     valid: list[dict] = []
 
     for row in resources:
-        name = str(row.get("resource_name", "unknown") or "unknown").strip().lower()
-        percent = _number_or_none(row.get("resource_percent"))
-        raw_scu = _number_or_none(row.get("raw_scu_estimate"))
-        comment = str(row.get("comment", "") or "")
+        name = str(row.get("resource_name", "unknown") or "unknown")
+        percent = row.get("resource_percent")
+        raw_scu = row.get("raw_scu_estimate")
+        comment = row.get("comment", "")
 
-        if raw_scu is not None and raw_scu <= 0:
-            raw_scu = None
-
-        if raw_scu is None and total_scu is not None and total_scu > 0 and percent is not None and percent > 0:
-            raw_scu = round(total_scu * percent / 100.0, 3)
-
-        if name == "unknown" and percent in (None, 0.0) and raw_scu in (None, 0.0) and not comment.strip():
+        if name == "unknown" and percent in (None, "", 0, 0.0) and raw_scu in (None, "", 0, 0.0):
             continue
 
         valid.append(
@@ -158,19 +137,17 @@ def _valid_resource_rows(resource_yield: dict) -> list[dict]:
                 "resource_name": name,
                 "resource_percent": percent,
                 "raw_scu_estimate": raw_scu,
+                "observed_window_size": row.get("observed_window_size", "unknown"),
+                "observed_charge_behavior": row.get("observed_charge_behavior", "unknown"),
                 "comment": comment,
             }
         )
 
     # Backward compatibility with old single-resource events.
     if not valid:
-        primary_resource = str(resource_yield.get("primary_resource", "unknown") or "unknown").strip().lower()
-        resource_percent = _number_or_none(resource_yield.get("resource_percent"))
-        raw_scu_estimate = _number_or_none(resource_yield.get("raw_scu_estimate"))
-        if raw_scu_estimate is not None and raw_scu_estimate <= 0:
-            raw_scu_estimate = None
-        if raw_scu_estimate is None and total_scu is not None and resource_percent is not None:
-            raw_scu_estimate = round(total_scu * resource_percent / 100.0, 3)
+        primary_resource = str(resource_yield.get("primary_resource", "unknown") or "unknown")
+        resource_percent = resource_yield.get("resource_percent")
+        raw_scu_estimate = resource_yield.get("raw_scu_estimate")
         if primary_resource != "unknown" or resource_percent is not None or raw_scu_estimate is not None:
             valid.append(
                 {
@@ -181,36 +158,7 @@ def _valid_resource_rows(resource_yield: dict) -> list[dict]:
                 }
             )
 
-    grouped: dict[str, dict] = {}
-    for row in valid:
-        name = row["resource_name"]
-        target = grouped.setdefault(
-            name,
-            {
-                "resource_name": name,
-                "resource_percent": 0.0,
-                "raw_scu_estimate": 0.0,
-                "comment": "",
-            },
-        )
-        if row.get("resource_percent") is not None:
-            target["resource_percent"] += float(row["resource_percent"])
-        if row.get("raw_scu_estimate") is not None:
-            target["raw_scu_estimate"] += float(row["raw_scu_estimate"])
-        if str(row.get("comment", "") or "").strip():
-            target["comment"] = "; ".join(
-                part for part in [target.get("comment", ""), str(row.get("comment", "")).strip()] if part
-            )
-
-    return [
-        {
-            "resource_name": row["resource_name"],
-            "resource_percent": round(row["resource_percent"], 3),
-            "raw_scu_estimate": round(row["raw_scu_estimate"], 3),
-            "comment": row.get("comment", ""),
-        }
-        for row in grouped.values()
-    ]
+    return valid
 
 
 def _sum_percent(resources: list[dict]) -> float | None:
@@ -314,6 +262,9 @@ def flatten_event(event: dict) -> dict:
 
     resources = _valid_resource_rows(resource_yield)
     resource_names = [row.get("resource_name", "unknown") for row in resources]
+    resource_window_behaviors = [row.get("observed_window_size", "unknown") for row in resources if row.get("observed_window_size", "unknown") != "unknown"]
+    resource_charge_behaviors = [row.get("observed_charge_behavior", "unknown") for row in resources if row.get("observed_charge_behavior", "unknown") != "unknown"]
+    dominant_resource_row = max(resources, key=lambda row: float(row.get("resource_percent") or 0.0), default={})
     refined_resources = _valid_refined_resource_rows(refinery)
     refined_resource_names = [row.get("resource_name", "unknown") for row in refined_resources]
     calibration_observations = _valid_calibration_observation_rows(calibration)
@@ -362,6 +313,10 @@ def flatten_event(event: dict) -> dict:
         "resource_comment": resource_yield.get("comment", ""),
         "resource_count": len(resources),
         "resource_names": ", ".join(resource_names),
+        "dominant_resource_window_hint": dominant_resource_row.get("observed_window_size", "unknown"),
+        "dominant_resource_charge_behavior": dominant_resource_row.get("observed_charge_behavior", "unknown"),
+        "resource_window_behaviors": ", ".join(resource_window_behaviors),
+        "resource_charge_behaviors": ", ".join(resource_charge_behaviors),
         "total_resource_percent": _sum_percent(resources),
         "resources_json": json.dumps(resources, ensure_ascii=False),
         "refinery_method": refinery.get("refinery_method", "unknown"),

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from sc_mining.domain.models import (
     BeamState,
     BuildProfile,
@@ -12,107 +10,54 @@ from sc_mining.domain.models import (
 
 
 MIN_BEAM_POWER_PERCENT = 20.0
-RAW_POWER_SCALE = 3150.0
-DEFAULT_OPTIMAL_RANGE_METERS = 15.0
-DEFAULT_MAX_RANGE_METERS = 45.0
-MIN_DISTANCE_EFFICIENCY_AT_MAX_RANGE = 0.35
-STABLE_TAKE_MARGIN_RATIO = 0.10
-ALMOST_MARGIN_RATIO = 0.90
+REFERENCE_DISTANCE_METERS = 25.0
+MIN_DISTANCE_EFFICIENCY = 0.05
+MAX_DISTANCE_EFFICIENCY = 1.75
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(value, upper))
 
 
-def head_max_power(head: HeadConfig) -> float:
-    """Return raw max mining power for a head.
+def distance_modifier(distance: float) -> float:
+    """Additional rock difficulty for long distances.
 
-    Older configs stored `base_power` as a normalized multiplier where Helix S1
-    was 1.00. Newer configs can provide `max_power` directly. Keeping both lets
-    old profiles still load while the calculator works in raw power units.
+    This remains intentionally mild. The main short/long distance effect is modeled
+    on beam delivery efficiency, not by making the rock itself harder.
     """
-    if head.max_power is not None:
-        return float(head.max_power)
-
-    return float(head.base_power) * RAW_POWER_SCALE
-
-
-def head_optimal_range(head: HeadConfig) -> float:
-    return float(head.optimal_range or DEFAULT_OPTIMAL_RANGE_METERS)
-
-
-def head_max_range(head: HeadConfig) -> float:
-    return float(head.max_range or DEFAULT_MAX_RANGE_METERS)
-
-
-def validate_distance_for_head(distance: float, head: HeadConfig) -> None:
-    if distance <= 0:
-        raise ValueError("Distance must be greater than 0")
-
-    max_range = head_max_range(head)
-    if distance > max_range:
-        raise ValueError(
-            f"Distance {distance:.1f}m is invalid for {head.name}. "
-            f"Max range is {max_range:.1f}m."
-        )
-
-
-def distance_efficiency_for_head(distance: float, head: HeadConfig) -> float:
-    """Approximate laser delivery loss by range.
-
-    Important calibration rules:
-    - no distance bonus above 1.0;
-    - at/below optimal range the factor is 1.0;
-    - beyond optimal range the factor falls linearly toward a conservative
-      residual efficiency at max range;
-    - beyond max range the event is invalid instead of being calculated.
-    """
-    safe_distance = float(distance)
-    validate_distance_for_head(safe_distance, head)
-
-    optimal = head_optimal_range(head)
-    max_range = head_max_range(head)
-
-    if safe_distance <= optimal:
+    if distance <= 100:
         return 1.0
 
-    if max_range <= optimal:
-        return 1.0
-
-    t = (safe_distance - optimal) / (max_range - optimal)
-    factor = 1.0 - t * (1.0 - MIN_DISTANCE_EFFICIENCY_AT_MAX_RANGE)
-
-    return clamp(factor, MIN_DISTANCE_EFFICIENCY_AT_MAX_RANGE, 1.0)
+    return 1.0 + ((distance - 100) / 100) * 0.15
 
 
 def distance_efficiency(distance: float) -> float:
-    """Backward-compatible helper using the default 15m/45m S1 range profile."""
-    dummy = HeadConfig(
-        name="Default mining head",
-        size=1,
-        base_power=1.0,
-        max_power=RAW_POWER_SCALE,
-        optimal_range=DEFAULT_OPTIMAL_RANGE_METERS,
-        max_range=DEFAULT_MAX_RANGE_METERS,
-    )
-    return distance_efficiency_for_head(distance, dummy)
+    """Approximate laser energy delivery at a given distance.
+
+    Mining UI power starts at 20%, but the delivered energy still depends heavily
+    on distance. A rock can be underpowered at 45m and overpowered at 15m with
+    the same beam percent.
+
+    This is a calibration heuristic, not an official Star Citizen formula.
+    """
+    safe_distance = max(float(distance), 1.0)
+    raw_efficiency = REFERENCE_DISTANCE_METERS / safe_distance
+    return clamp(raw_efficiency, MIN_DISTANCE_EFFICIENCY, MAX_DISTANCE_EFFICIENCY)
 
 
 def calculate_required_power(rock: RockInput) -> float:
-    """Approximate raw power needed to start a stable warm-up.
-
-    Community calibration model:
-        required = mass * 0.2 / (1 - resistance)
-
-    `resistance` is stored as a fraction in this app: 47% -> 0.47.
-    Instability affects risk/control, not the basic mass threshold.
-    Distance affects delivered beam power, not rock difficulty.
     """
-    if rock.resistance >= 1.0:
-        raise ValueError("Rock resistance must be below 100%")
+    Baseline formula.
 
-    resistance_factor = 1.0 - float(rock.resistance)
-    return float(rock.mass) * 0.2 / resistance_factor
+    This is not the real Star Citizen formula.
+    It is a first approximation for future calibration.
+    """
+    mass_factor = rock.mass / 1000.0
+    resistance_factor = 1.0 + rock.resistance * 1.8
+    instability_factor = 1.0 + rock.instability * 0.8
+    dist_factor = distance_modifier(rock.distance)
+
+    return mass_factor * resistance_factor * instability_factor * dist_factor
 
 
 def find_head_build(build: BuildProfile, slot: str):
@@ -123,31 +68,33 @@ def find_head_build(build: BuildProfile, slot: str):
     raise ValueError(f"Unknown beam slot in build: {slot}")
 
 
-def calculate_build_power_multiplier(
-    module_ids: list[str],
+def calculate_beam_power(
+    beam: BeamState,
+    build: BuildProfile,
+    heads: dict[str, HeadConfig],
     modules: dict[str, ModuleConfig],
-) -> float:
+) -> tuple[float, list[str]]:
+    notes: list[str] = []
+
+    head_build = find_head_build(build, beam.slot)
+
+    if head_build.head_id not in heads:
+        raise ValueError(f"Unknown head_id in build: {head_build.head_id}")
+
+    head = heads[head_build.head_id]
+
     power_multiplier = 1.0
 
-    for module_id in module_ids:
+    for module_id in head_build.modules:
         if module_id not in modules:
             raise ValueError(f"Unknown module_id in build: {module_id}")
 
         module = modules[module_id]
+
         if module.type == "passive":
             power_multiplier *= module.power_modifier
 
-    return power_multiplier
-
-
-def calculate_active_power_multiplier(
-    module_ids: list[str],
-    modules: dict[str, ModuleConfig],
-    notes: list[str],
-) -> float:
-    power_multiplier = 1.0
-
-    for module_id in module_ids:
+    for module_id in beam.active_modules:
         if module_id not in modules:
             raise ValueError(f"Unknown active module_id: {module_id}")
 
@@ -160,52 +107,21 @@ def calculate_active_power_multiplier(
         power_multiplier *= module.power_modifier
         notes.append(f"Active module applied: {module_id}")
 
-    return power_multiplier
-
-
-def calculate_beam_power(
-    beam: BeamState,
-    build: BuildProfile,
-    heads: dict[str, HeadConfig],
-    modules: dict[str, ModuleConfig],
-    distance: float,
-) -> tuple[float, list[str]]:
-    notes: list[str] = []
-
-    head_build = find_head_build(build, beam.slot)
-
-    if head_build.head_id not in heads:
-        raise ValueError(f"Unknown head_id in build: {head_build.head_id}")
-
-    head = heads[head_build.head_id]
-    validate_distance_for_head(distance, head)
-
-    passive_multiplier = calculate_build_power_multiplier(head_build.modules, modules)
-    active_multiplier = calculate_active_power_multiplier(beam.active_modules, modules, notes)
-
     if beam.power_percent < MIN_BEAM_POWER_PERCENT:
         raise ValueError(
             f"Beam {beam.slot} power_percent must be at least "
             f"{MIN_BEAM_POWER_PERCENT:.0f}. Mining laser UI starts at 20%."
         )
 
-    full_power = head_max_power(head) * passive_multiplier * active_multiplier
-    power_before_distance = full_power * (beam.power_percent / 100.0)
-    efficiency = distance_efficiency_for_head(distance, head)
-    power_after_distance = power_before_distance * efficiency
+    base = head.base_power * 100.0
+    power = base * (beam.power_percent / 100.0) * power_multiplier
 
     notes.append(
         f"Beam {beam.slot}: head={head_build.head_id}, "
-        f"full_power={full_power:.2f}, power_percent={beam.power_percent}, "
-        f"effective_before_distance={power_before_distance:.2f}"
-    )
-    notes.append(
-        f"Distance efficiency for {beam.slot}: distance={distance}, "
-        f"optimal={head_optimal_range(head):.1f}, max={head_max_range(head):.1f}, "
-        f"factor={efficiency:.3f}, effective_after_distance={power_after_distance:.2f}"
+        f"power_percent={beam.power_percent}, effective_before_distance={power:.2f}"
     )
 
-    return power_after_distance, notes
+    return power, notes
 
 
 def calculate_effective_power(
@@ -213,7 +129,7 @@ def calculate_effective_power(
     heads: dict[str, HeadConfig],
     modules: dict[str, ModuleConfig],
 ) -> tuple[float, list[str]]:
-    total = 0.0
+    total_before_distance = 0.0
     notes: list[str] = []
 
     if not calc_input.beams:
@@ -225,12 +141,17 @@ def calculate_effective_power(
             build=calc_input.build,
             heads=heads,
             modules=modules,
-            distance=calc_input.rock.distance,
         )
-        total += beam_power
+        total_before_distance += beam_power
         notes.extend(beam_notes)
 
-    notes.append(f"Total effective power: {total:.2f}")
+    efficiency = distance_efficiency(calc_input.rock.distance)
+    total = total_before_distance * efficiency
+
+    notes.append(
+        f"Distance efficiency: distance={calc_input.rock.distance}, "
+        f"factor={efficiency:.3f}, effective_after_distance={total:.2f}"
+    )
 
     return total, notes
 
@@ -240,40 +161,31 @@ def calculate_risk_score(
     effective_power: float,
     rock: RockInput,
 ) -> float:
-    """Risk score in range 0..1.
+    """
+    Risk score in range 0..1.
 
-    High instability, low/negative margin, and large overpower all increase risk.
-    The value is diagnostic; verdict boundaries are handled separately.
+    Higher instability and lower margin increase risk.
     """
     if effective_power <= 0:
         return 1.0
 
     margin_ratio = (effective_power - required_power) / max(required_power, 1.0)
 
-    if margin_ratio < 0:
-        margin_risk = clamp(abs(margin_ratio), 0.0, 1.0)
-    elif margin_ratio < STABLE_TAKE_MARGIN_RATIO:
-        margin_risk = 0.45 - 0.25 * (margin_ratio / STABLE_TAKE_MARGIN_RATIO)
-    else:
-        margin_risk = 0.10
+    margin_risk = 1.0 - max(min((margin_ratio + 0.3) / 0.8, 1.0), 0.0)
+    instability_risk = min(rock.instability, 1.0) * 0.5
 
-    instability_risk = clamp(float(rock.instability), 0.0, 1.0) * 0.45
-
+    # Too much delivered power is also risky: at close range the same percent can
+    # overshoot the extraction window. This keeps high positive margins visible
+    # as risk instead of always treating them as safe.
     overpower_ratio = effective_power / max(required_power, 1.0)
-    overpower_risk = clamp((overpower_ratio - 1.35) / 1.50, 0.0, 1.0) * 0.35
+    overpower_risk = min(max((overpower_ratio - 1.20) / 1.30, 0.0) * 0.55, 0.55)
 
-    return clamp(margin_risk + instability_risk + overpower_risk, 0.0, 1.0)
+    return max(min(margin_risk + instability_risk + overpower_risk, 1.0), 0.0)
 
 
-def choose_verdict(required_power: float, effective_power: float, risk_score: float) -> str:
-    if effective_power < required_power * ALMOST_MARGIN_RATIO:
+def choose_verdict(margin: float, risk_score: float) -> str:
+    if margin < 0:
         return "need_more_power"
-
-    if effective_power < required_power:
-        return "almost"
-
-    if effective_power < required_power * (1.0 + STABLE_TAKE_MARGIN_RATIO):
-        return "edge_take"
 
     if risk_score >= 0.75:
         return "skip"
@@ -290,11 +202,11 @@ def calculate(
     modules: dict[str, ModuleConfig],
 ) -> CalculationResult:
     required = calculate_required_power(calc_input.rock)
-    effective, notes = calculate_effective_power(calc_input, heads=heads, modules=modules)
+    effective, notes = calculate_effective_power(calc_input, heads, modules)
 
     margin = effective - required
     risk = calculate_risk_score(required, effective, calc_input.rock)
-    verdict = choose_verdict(required, effective, risk)
+    verdict = choose_verdict(margin, risk)
 
     return CalculationResult(
         required_power=round(required, 3),
