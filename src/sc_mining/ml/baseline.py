@@ -114,6 +114,18 @@ def prepare_training_frame(dataset: pd.DataFrame) -> pd.DataFrame:
 
     working = _normalize_dataset(dataset)
     labeled = working[working["is_labeled"]].copy()
+
+    if "formula_issue_flag" in working.columns and not labeled.empty:
+        def _is_formula_issue(value) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in {"true", "1", "yes", "y"}
+            return False
+
+        issue_flag = working.loc[labeled.index, "formula_issue_flag"].apply(_is_formula_issue).astype(bool)
+        labeled = labeled.loc[~issue_flag].copy()
+
     return labeled[FEATURE_COLUMNS + ["actual_outcome", TARGET_COLUMN]]
 
 

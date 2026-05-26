@@ -57,7 +57,7 @@ NUMERIC_SANITY_RULES: dict[str, dict[str, float | None]] = {
     "mass": {"min": 1.0, "max": 500_000.0},
     "resistance": {"min": 0.0, "max": 1.0},
     "instability": {"min": 0.0, "max": 1.0},
-    "distance": {"min": 1.0, "max": 500.0},
+    "distance": {"min": 1.0, "max": 45.0},
     "beam_count": {"min": 0.0, "max": 3.0},
     "beam_power_sum": {"min": 0.0, "max": 300.0},
     "required_power": {"min": 0.0, "max": None},

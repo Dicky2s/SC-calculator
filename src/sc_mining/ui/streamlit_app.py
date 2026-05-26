@@ -8,6 +8,8 @@ from sc_mining.ui.table_utils import make_arrow_safe_dataframe
 import streamlit as st
 
 from sc_mining.domain.calculator import calculate
+from sc_mining.domain.resource_prices import load_resource_price_config
+from sc_mining.domain.resource_math import build_resource_scu_preview_rows
 from sc_mining.domain.recommendations import build_power_distance_recommendation
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules
 from sc_mining.dataset.exporter import build_dataset, export_dataset, get_dataset_export_summary
@@ -150,6 +152,7 @@ RESOURCE_OPTIONS = [
     "unknown",
     "aluminum",
     "agricium",
+    "aslarite",
     "bexalite",
     "beryl",
     "borase",
@@ -157,6 +160,7 @@ RESOURCE_OPTIONS = [
     "diamond",
     "gold",
     "hephaestanite",
+    "inert_material",
     "iron",
     "laranite",
     "quantainium",
@@ -198,6 +202,10 @@ def build_loadout_rows(build, modules: dict) -> list[dict]:
 def format_verdict(verdict: str) -> str:
     if verdict == "take":
         return "TAKE"
+    if verdict == "edge_take":
+        return "EDGE TAKE"
+    if verdict == "almost":
+        return "ALMOST"
     if verdict == "risky":
         return "RISKY"
     if verdict == "skip":
@@ -275,14 +283,38 @@ def _clean_resource_rows(rows: list[dict]) -> list[ResourceComponent]:
         percent_missing = resource_percent in (None, "") or pd.isna(resource_percent)
         raw_scu_missing = raw_scu_estimate in (None, "") or pd.isna(raw_scu_estimate)
 
-        if resource_name == "unknown" and percent_missing and raw_scu_missing and not comment.strip():
+        percent_value = None if percent_missing else float(resource_percent)
+        raw_scu_value = None if raw_scu_missing else float(raw_scu_estimate)
+
+        # Drop untouched placeholder rows, including default 0% / 0 SCU rows.
+        if (
+            resource_name == "unknown"
+            and (percent_value is None or percent_value == 0.0)
+            and (raw_scu_value is None or raw_scu_value == 0.0)
+            and not comment.strip()
+        ):
             continue
+
+        # Drop named accidental placeholders. Use inert_material if you want to
+        # intentionally capture inert/unknown share.
+        if (
+            resource_name != "inert_material"
+            and (percent_value is None or percent_value == 0.0)
+            and (raw_scu_value is None or raw_scu_value == 0.0)
+            and not comment.strip()
+        ):
+            continue
+
+        # If percent is present and Raw SCU is left as 0, treat Raw SCU as empty
+        # so it can be derived from Composition total SCU.
+        if raw_scu_value == 0.0 and percent_value and percent_value > 0:
+            raw_scu_value = None
 
         resources.append(
             ResourceComponent(
                 resource_name=resource_name,
-                resource_percent=float(resource_percent) if not percent_missing else None,
-                raw_scu_estimate=float(raw_scu_estimate) if not raw_scu_missing else None,
+                resource_percent=percent_value,
+                raw_scu_estimate=raw_scu_value,
                 comment=comment.strip(),
             )
         )
@@ -304,7 +336,8 @@ def _fill_resource_scu_from_total(resources: list[ResourceComponent], total_scu_
 
     filled: list[ResourceComponent] = []
     for item in resources:
-        if item.raw_scu_estimate is None and item.resource_percent is not None:
+        raw_scu_missing = item.raw_scu_estimate is None or item.raw_scu_estimate <= 0
+        if raw_scu_missing and item.resource_percent is not None and item.resource_percent > 0:
             filled.append(
                 ResourceComponent(
                     resource_name=item.resource_name,
@@ -405,18 +438,36 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
     total_scu_value = total_scu_estimate if total_scu_estimate > 0 else None
     resources = _fill_resource_scu_from_total(resources, total_scu_value)
 
+    derived_market_value_auec = None
+
     if resources:
-        preview_rows = [
-            {
-                "resource_name": item.resource_name,
-                "resource_percent": item.resource_percent,
-                "raw_scu_estimate": item.raw_scu_estimate,
-                "comment": item.comment,
-            }
-            for item in resources
-        ]
-        with st.expander("Derived resource preview", expanded=False):
-            display_safe_dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
+        price_config = load_resource_price_config()
+        preview_rows = build_resource_scu_preview_rows(
+            resources=resources,
+            total_scu_estimate=total_scu_value,
+            prices=price_config["prices"],
+        )
+        preview_df = pd.DataFrame(preview_rows)
+
+        st.write("Estimated SCU and processed market value")
+        st.caption(
+            f"Market prices: `{price_config['version']}` / `{price_config['unit']}`. "
+            "These are editable seed estimates in configs/resource_prices.yaml."
+        )
+        display_safe_dataframe(preview_df, width="stretch", hide_index=True)
+
+        total_row = preview_df[preview_df["resource_name"] == "TOTAL"]
+        if not total_row.empty:
+            total_percent_value = float(total_row.iloc[0]["scan_percent"])
+            total_value = total_row.iloc[0]["estimated_processed_value_auec"]
+            if pd.notna(total_value):
+                derived_market_value_auec = float(total_value)
+                st.metric("Estimated processed market value", f"{derived_market_value_auec:,.0f} aUEC")
+
+            if total_percent_value > 100.5:
+                st.warning(f"Resource scan percent total is {total_percent_value:.2f}%. Check duplicated/resource rows.")
+            elif total_percent_value < 99.5:
+                st.info(f"Resource scan percent total is {total_percent_value:.2f}%. Remaining share may be inert/unknown material.")
 
     resource_comment = st.text_area(
         "Mining/resource comment",
@@ -436,7 +487,7 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
         )
     with yield_col2:
         estimated_value_auec = st.number_input(
-            "Estimated value before refinery, aUEC",
+            "Manual value override, aUEC",
             min_value=0.0,
             value=0.0,
             step=1000.0,
@@ -459,7 +510,7 @@ def render_resource_yield_form(key_prefix: str = "calculator") -> ResourceYieldF
         raw_scu_estimate=raw_scu_estimate,
         total_scu_estimate=total_scu_value,
         refined_scu_estimate=None,
-        estimated_value_auec=estimated_value_auec if estimated_value_auec > 0 else None,
+        estimated_value_auec=estimated_value_auec if estimated_value_auec > 0 else derived_market_value_auec,
         mining_time_seconds=mining_time_seconds if mining_time_seconds > 0 else None,
         comment=resource_comment.strip(),
         resources=resources,

@@ -37,7 +37,7 @@ def dataset_row(
         "mass": mass,
         "resistance": resistance,
         "instability": instability,
-        "distance": 92.0,
+        "distance": 30.0,
         "beam_count": 1,
         "beam_slots": "main",
         "beam_power_sum": 65.0,

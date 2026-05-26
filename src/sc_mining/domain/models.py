@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 ModuleType = Literal["passive", "active"]
-Verdict = Literal["take", "risky", "skip", "need_more_power"]
+Verdict = Literal["take", "edge_take", "almost", "risky", "skip", "need_more_power"]
 OutcomeLabel = Literal[
     "unknown",
     "good",
@@ -36,7 +36,12 @@ class RockInput(BaseModel):
 class HeadConfig(BaseModel):
     name: str
     size: int
+    # Backward-compatible normalized power kept for older configs.
+    # New calculator logic uses max_power when present.
     base_power: float
+    max_power: float | None = None
+    optimal_range: float = 15.0
+    max_range: float = 45.0
     stability_modifier: float = 1.0
     optimal_window_modifier: float = 1.0
 

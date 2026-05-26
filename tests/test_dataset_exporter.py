@@ -31,7 +31,7 @@ def sample_event(event_id: str, verdict: str, actual_outcome: str) -> dict:
             "mass": 12600,
             "resistance": 0.34,
             "instability": 0.12,
-            "distance": 92,
+            "distance": 30,
         },
         "beams": [
             {

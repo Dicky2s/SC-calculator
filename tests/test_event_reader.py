@@ -44,7 +44,7 @@ def test_load_events_dataframe_flattens_event(tmp_path):
             "mass": 12600,
             "resistance": 0.34,
             "instability": 0.12,
-            "distance": 92,
+            "distance": 30,
         },
         "beams": [
             {
@@ -155,7 +155,7 @@ def test_load_events_dataframe_flattens_ml_prediction_snapshot(tmp_path):
         "timestamp": "2026-05-25T12:00:00+00:00",
         "source": "manual_ui",
         "build": {"build_id": "b1", "ship_type": "prospector"},
-        "rock": {"mass": 10000, "resistance": 0.2, "instability": 0.1, "distance": 90},
+        "rock": {"mass": 10000, "resistance": 0.2, "instability": 0.1, "distance": 30},
         "beams": [{"slot": "main", "power_percent": 70}],
         "result": {
             "required_power": 20,
@@ -190,3 +190,27 @@ def test_load_events_dataframe_flattens_ml_prediction_snapshot(tmp_path):
     assert row["ml_good_probability"] == 0.33
     assert row["ml_confidence_band"] == "weak_not_good"
     assert row["ml_agreement_label"] == "ml_warns_against_formula_take"
+
+
+def test_flatten_event_aggregates_duplicate_resources_and_derives_scu():
+    event = {
+        "event_id": "event-resources-1",
+        "resource_yield": {
+            "total_scu_estimate": 23.07,
+            "resources": [
+                {"resource_name": "tin", "resource_percent": 7.72, "raw_scu_estimate": 0.0},
+                {"resource_name": "copper", "resource_percent": 7.27, "raw_scu_estimate": 0.0},
+                {"resource_name": "copper", "resource_percent": 50.35, "raw_scu_estimate": 0.0},
+                {"resource_name": "other", "resource_percent": 34.64, "raw_scu_estimate": 7.991},
+            ],
+        },
+    }
+
+    row = flatten_event(event)
+    resources = json.loads(row["resources_json"])
+    by_name = {item["resource_name"]: item for item in resources}
+
+    assert by_name["copper"]["resource_percent"] == 57.62
+    assert by_name["copper"]["raw_scu_estimate"] == 13.293
+    assert by_name["tin"]["raw_scu_estimate"] == 1.781
+    assert by_name["other"]["raw_scu_estimate"] == 7.991

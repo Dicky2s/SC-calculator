@@ -30,7 +30,7 @@ def make_dataset(rows=40):
                 "mass": 12000 + index * 100,
                 "resistance": 0.2 + (index % 5) * 0.05,
                 "instability": 0.04 + (index % 4) * 0.03,
-                "distance": 80 + index % 20,
+                "distance": 25 + index % 20,
                 "beam_count": 1 if index % 3 else 2,
                 "beam_slots": "main" if index % 3 else "main,left",
                 "beam_power_sum": 65 + index % 10,

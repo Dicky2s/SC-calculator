@@ -1,4 +1,4 @@
-﻿from sc_mining.domain.calculator import calculate
+from sc_mining.domain.calculator import calculate
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules
 from sc_mining.domain.models import BeamState, CalculationInput, RockInput
 
@@ -13,7 +13,7 @@ def test_easy_rock_should_be_take_or_risky():
             mass=5000,
             resistance=0.1,
             instability=0.05,
-            distance=80,
+            distance=30,
         ),
         build=build,
         beams=[
@@ -37,7 +37,7 @@ def test_hard_rock_should_not_be_easy_take():
             mass=50000,
             resistance=0.8,
             instability=0.4,
-            distance=140,
+            distance=45,
         ),
         build=build,
         beams=[
@@ -61,7 +61,7 @@ def test_mole_two_beams_should_have_more_power_than_prospector():
         mass=25000,
         resistance=0.35,
         instability=0.15,
-        distance=100,
+        distance=30,
     )
 
     prospector_input = CalculationInput(
@@ -97,7 +97,7 @@ def test_unknown_beam_slot_should_raise_error():
             mass=5000,
             resistance=0.1,
             instability=0.05,
-            distance=80,
+            distance=30,
         ),
         build=build,
         beams=[
@@ -118,13 +118,13 @@ def test_distance_changes_delivered_power_at_minimum_beam_power():
     build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
 
     rock_near = RockInput(
-        mass=13040,
+        mass=4000,
         resistance=0.0,
         instability=0.12,
         distance=15,
     )
     rock_far = RockInput(
-        mass=13040,
+        mass=4000,
         resistance=0.0,
         instability=0.12,
         distance=45,
@@ -163,3 +163,56 @@ def test_beam_power_below_twenty_is_rejected():
         assert "greater than or equal to 20" in str(error)
     else:
         raise AssertionError("Expected validation error for beam power below 20%")
+
+
+def test_prospector_helix_2x_rieger_raw_power_calibration_at_15m():
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
+    rock = RockInput(mass=19635, resistance=0.0, instability=0.1854, distance=15)
+
+    low_result = calculate(
+        CalculationInput(
+            rock=rock,
+            build=build,
+            beams=[BeamState(slot="main", power_percent=20)],
+        ),
+        heads=heads,
+        modules=modules,
+    )
+    stable_result = calculate(
+        CalculationInput(
+            rock=rock,
+            build=build,
+            beams=[BeamState(slot="main", power_percent=80)],
+        ),
+        heads=heads,
+        modules=modules,
+    )
+
+    assert low_result.required_power == 3927.0
+    assert low_result.effective_power == 984.375
+    assert low_result.verdict == "need_more_power"
+    assert stable_result.effective_power == 3937.5
+    assert stable_result.verdict == "edge_take"
+
+
+def test_distance_above_head_max_range_is_rejected():
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
+
+    try:
+        calculate(
+            CalculationInput(
+                rock=RockInput(mass=10000, resistance=0.0, instability=0.1, distance=88),
+                build=build,
+                beams=[BeamState(slot="main", power_percent=80)],
+            ),
+            heads=heads,
+            modules=modules,
+        )
+    except ValueError as error:
+        assert "Max range is 45.0m" in str(error)
+    else:
+        raise AssertionError("Expected ValueError for distance above max mining head range")

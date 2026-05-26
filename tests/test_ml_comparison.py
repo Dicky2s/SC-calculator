@@ -44,7 +44,7 @@ def make_dataset(rows=40):
                 "mass": 12000 + index * 100,
                 "resistance": 0.18 if is_good else 0.55,
                 "instability": 0.04 if is_good else 0.42,
-                "distance": 80 + index % 20,
+                "distance": 25 + index % 20,
                 "beam_count": 1,
                 "beam_slots": "main",
                 "beam_power_sum": 65 + index % 10,
@@ -68,7 +68,7 @@ def make_calc_input() -> CalculationInput:
         heads=[HeadBuild(slot="main", head_id="helix_s1", modules=[])],
     )
     return CalculationInput(
-        rock=RockInput(mass=15000, resistance=0.2, instability=0.04, distance=85),
+        rock=RockInput(mass=15000, resistance=0.2, instability=0.04, distance=30),
         build=build,
         beams=[BeamState(slot="main", power_percent=65, active_modules=[])],
     )

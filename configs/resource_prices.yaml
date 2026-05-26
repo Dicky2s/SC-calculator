@@ -1,0 +1,29 @@
+# Seed refined market prices for SC Mining Assistant.
+# Unit: aUEC per 1 SCU of processed/refined commodity.
+# These are editable local estimates for planning/analytics, not authoritative live prices.
+# Check UEX / Regolith / SC Trade Tools before using values as economic truth.
+version: seed_refined_prices_v1
+currency: aUEC
+unit: per_scu_refined
+prices:
+  agricium: 4168
+  aluminum: 1628
+  aslarite: 5100
+  beryl:
+  bexalite:
+  borase: 3418
+  copper: 387
+  diamond: 4302
+  gold: 6329
+  hephaestanite:
+  inert_material: 0
+  iron: 403
+  laranite: 2829
+  quantainium:
+  quartz:
+  taranite:
+  tin: 357
+  titanium: 481
+  tungsten: 655
+  other:
+  unknown:
