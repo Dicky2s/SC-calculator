@@ -262,6 +262,26 @@ def compact_module_list(module_ids: list[str], modules: dict) -> str:
     return " + ".join(parts)
 
 
+def build_module_ids(build) -> set[str]:
+    module_ids: set[str] = set()
+    for head in build.heads:
+        module_ids.update(head.modules)
+    return module_ids
+
+
+def build_module_filter_token(module_ids: list[str]) -> str:
+    if not module_ids:
+        return "all"
+    return "__".join(sorted(module_ids))
+
+
+def build_matches_module_filter(build, selected_module_ids: list[str]) -> bool:
+    if not selected_module_ids:
+        return True
+    available_module_ids = build_module_ids(build)
+    return all(module_id in available_module_ids for module_id in selected_module_ids)
+
+
 def build_loadout_text_lines(build, heads: dict, modules: dict) -> list[str]:
     lines: list[str] = []
     for head in build.heads:
@@ -3522,38 +3542,98 @@ def main() -> None:
         key="selected_ship_type",
     )
 
-    filtered_build_files = [
+    ship_build_files = [
         path
         for path in build_files
         if build_by_path[path].ship_type == selected_ship
     ]
+
+    ship_module_ids = sorted(
+        {
+            module_id
+            for path in ship_build_files
+            for module_id in build_module_ids(build_by_path[path])
+        },
+        key=lambda module_id: module_display_name(module_id, modules).lower(),
+    )
+    selected_module_ids = st.sidebar.multiselect(
+        "Filter by modules",
+        ship_module_ids,
+        key=f"selected_build_module_filter__{selected_ship}",
+        format_func=lambda module_id: module_display_name(module_id, modules),
+        help="Optional filter for the build list. A build must contain every selected module.",
+    )
+
+    filtered_build_files = [
+        path
+        for path in ship_build_files
+        if build_matches_module_filter(build_by_path[path], selected_module_ids)
+    ]
+    if not filtered_build_files:
+        st.sidebar.warning("No build profiles match the selected module filter. Showing all builds for this ship.")
+        filtered_build_files = ship_build_files
+
     filtered_build_options = [str(path) for path in filtered_build_files]
+    st.sidebar.caption(f"Matching build profiles: {len(filtered_build_options)}")
 
     selected_build_state_key = "selected_build_profile_path"
     selected_ship_build_state_key = f"selected_build_profile_path__{selected_ship}"
-    remembered_build = st.session_state.get(
-        selected_ship_build_state_key,
-        st.session_state.get(selected_build_state_key),
+    module_filter_token = build_module_filter_token(selected_module_ids)
+    selected_build_index_key = (
+        f"selected_build_profile_index__{selected_ship}__{module_filter_token}"
     )
+
+    # Use an integer index as the widget value instead of the build path itself.
+    # Streamlit can preserve a stale string value for a selectbox across reruns,
+    # which can leave a Golem path visible while Ship says Prospector. An index
+    # can only point into the current ship/filter option list, so stale paths from
+    # another ship are structurally impossible.
+    remembered_build = st.session_state.get(selected_ship_build_state_key)
     if remembered_build not in filtered_build_options:
         remembered_build = filtered_build_options[0]
-    st.session_state[selected_build_state_key] = remembered_build
+    default_build_index = filtered_build_options.index(remembered_build)
 
-    selected_build_path = st.sidebar.selectbox(
-        "Build profile",
-        filtered_build_options,
-        key=selected_build_state_key,
-        format_func=lambda path_text: build_profile_label(
+    current_index = st.session_state.get(selected_build_index_key)
+    if not isinstance(current_index, int) or current_index < 0 or current_index >= len(filtered_build_options):
+        st.session_state[selected_build_index_key] = default_build_index
+
+    def _format_build_index(index: int) -> str:
+        try:
+            path_text = filtered_build_options[index]
+        except (IndexError, TypeError):
+            path_text = filtered_build_options[0]
+        return build_profile_label(
             build_by_path[Path(path_text)],
             heads,
             modules,
-        ),
-        help="Readable loadout label. The selected build is kept in session state across app refresh/rerun.",
+        )
+
+    selected_build_index = st.sidebar.selectbox(
+        "Build profile",
+        list(range(len(filtered_build_options))),
+        index=st.session_state[selected_build_index_key],
+        key=selected_build_index_key,
+        format_func=_format_build_index,
+        help="Readable loadout label. The widget stores only an index into the currently filtered build list, so a profile from another ship cannot survive refresh/rerun.",
     )
+
+    selected_build_path = filtered_build_options[selected_build_index]
+    selected_build = build_by_path[Path(selected_build_path)]
+
+    # Hard invariant: the selected build must belong to the selected ship. If this
+    # ever trips, recover immediately instead of rendering a mixed ship/build UI.
+    if selected_build.ship_type != selected_ship:
+        selected_build_index = 0
+        st.session_state[selected_build_index_key] = selected_build_index
+        selected_build_path = filtered_build_options[selected_build_index]
+        selected_build = build_by_path[Path(selected_build_path)]
+        st.sidebar.warning("Recovered a stale build selection from another ship.")
+
+    st.session_state[selected_build_state_key] = selected_build_path
     st.session_state[selected_ship_build_state_key] = selected_build_path
 
     build_file = Path(selected_build_path)
-    build = build_by_path[build_file]
+    build = selected_build
 
     st.sidebar.subheader("Current build")
     st.sidebar.write(f"Loadout: **{build_profile_label(build, heads, modules)}**")
@@ -3561,7 +3641,7 @@ def main() -> None:
     st.sidebar.write(f"File: `{build_file.name}`")
     st.sidebar.caption("The selected build is preserved when you press Refresh. Change Ship or Build profile only when you want a different loadout.")
 
-    with st.sidebar.expander("Selected loadout", expanded=True):
+    with st.sidebar.expander("Loadout details", expanded=False):
         for line in build_loadout_text_lines(build, heads, modules):
             st.markdown(f"- {line}")
 

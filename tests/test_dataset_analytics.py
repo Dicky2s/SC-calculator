@@ -191,3 +191,21 @@ def test_build_basic_analytics_report_counts_diagnostic_groups():
     assert report["risky_good_count"] == 1
     assert report["correct_take_count"] == 1
     assert report["correct_avoid_count"] == 1
+
+
+def test_feature_signal_constant_values_do_not_emit_correlation_warning() -> None:
+    import warnings
+
+    dataset = pd.DataFrame(
+        [
+            {"actual_outcome": "good", "mass": 100.0},
+            {"actual_outcome": "poor", "mass": 100.0},
+        ]
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        table = build_feature_signal_table(dataset, features=["mass"])
+
+    assert table.loc[0, "correlation_with_good"] is None
+    assert not any("invalid value encountered in divide" in str(item.message) for item in caught)

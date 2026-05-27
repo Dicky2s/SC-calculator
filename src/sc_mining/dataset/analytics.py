@@ -219,8 +219,18 @@ def build_feature_signal_table(
         else:
             difference = mean_good - mean_not_good
 
-        if values.notna().sum() >= 2 and labeled["is_good_outcome"].nunique() >= 2:
-            correlation = values.corr(labeled["is_good_outcome"])
+        valid = pd.DataFrame(
+            {
+                "value": values,
+                "is_good_outcome": labeled["is_good_outcome"],
+            }
+        ).dropna()
+        if (
+            len(valid) >= 2
+            and valid["value"].nunique() >= 2
+            and valid["is_good_outcome"].nunique() >= 2
+        ):
+            correlation = valid["value"].corr(valid["is_good_outcome"])
             correlation_value = None if pd.isna(correlation) else float(correlation)
         else:
             correlation_value = None
