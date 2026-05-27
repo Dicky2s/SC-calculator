@@ -11,6 +11,11 @@ from sc_mining.storage.event_reader import LABELED_OUTCOME_VALUES
 MIN_LABELED_ROWS_FOR_BASELINE = 30
 IMBALANCE_WARNING_SHARE = 0.80
 OPTIONAL_MISSING_COLUMNS = {
+    "scan_distance",
+    "training_observation_source",
+    "training_observation_phase",
+    "training_observation_distance",
+    "training_observation_power_percent",
     "operator_name",
     "crew_size",
     "run_tag",

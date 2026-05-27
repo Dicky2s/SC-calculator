@@ -73,6 +73,7 @@ def build_calculation_event(
     refinery: RefineryFeedback | None = None,
     calibration: CalibrationFeedback | None = None,
     run_context: RunContext | None = None,
+    formula_recommendation: dict | None = None,
 ) -> dict:
     outcome_feedback = outcome or OutcomeFeedback()
     resource_feedback = resource_yield or ResourceYieldFeedback()
@@ -98,6 +99,7 @@ def build_calculation_event(
         "rock": model_to_dict(calc_input.rock),
         "beams": [model_to_dict(beam) for beam in calc_input.beams],
         "result": model_to_dict(result),
+        "formula_recommendation": formula_recommendation or {},
         "ml_prediction": ml_prediction,
         "outcome": model_to_dict(outcome_feedback),
         "resource_yield": model_to_dict(resource_feedback),
@@ -131,6 +133,7 @@ def save_calculation_event(
     refinery: RefineryFeedback | None = None,
     calibration: CalibrationFeedback | None = None,
     run_context: RunContext | None = None,
+    formula_recommendation: dict | None = None,
 ) -> dict:
     event = build_calculation_event(
         session_id=session_id,
@@ -143,6 +146,7 @@ def save_calculation_event(
         refinery=refinery,
         calibration=calibration,
         run_context=run_context,
+        formula_recommendation=formula_recommendation,
     )
 
     append_jsonl(path, event)

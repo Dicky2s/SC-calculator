@@ -214,28 +214,22 @@ def choose_stable_hold(candidates: list[PowerDistanceCandidate]) -> PowerDistanc
 
 
 def build_recommendation_scan_input(calc_input: CalculationInput) -> CalculationInput:
-    """Create a scan input that ignores the current UI power slider value.
+    """Create a scan input that ignores any placeholder/current UI power value.
 
-    The recommendation helper is supposed to find a good power percent, so it
-    must not depend on the already-selected power slider. It keeps the selected
-    rock, build, enabled/selected active modules by slot, and then lets the grid
-    scan replace power from 20% to 100%. When no beam is currently enabled in the
-    UI, all build slots are still scanned with no active modules so the helper
-    remains useful.
+    The recommendation helper finds the power percent itself, so it must not
+    depend on a manually selected slider value. It keeps only the enabled beam
+    slots and their selected active modules, then lets the grid scan replace
+    power from 20% to 100%. If the user disables all beams, the helper returns
+    no candidates instead of silently scanning every installed head.
     """
-
-    active_modules_by_slot = {
-        beam.slot: list(beam.active_modules)
-        for beam in calc_input.beams
-    }
 
     beams = [
         BeamState(
-            slot=head.slot,
+            slot=beam.slot,
             power_percent=20.0,
-            active_modules=active_modules_by_slot.get(head.slot, []),
+            active_modules=list(beam.active_modules),
         )
-        for head in calc_input.build.heads
+        for beam in calc_input.beams
     ]
 
     return CalculationInput(
@@ -247,6 +241,40 @@ def build_recommendation_scan_input(calc_input: CalculationInput) -> Calculation
         ),
         build=calc_input.build,
         beams=beams,
+    )
+
+
+def select_recommendation_candidate(
+    recommendation: PowerDistanceRecommendation,
+) -> PowerDistanceCandidate | None:
+    """Choose the candidate that should represent the formula snapshot.
+
+    Stable hold is the most useful save/ML snapshot because it reflects the
+    recommended working point. If no stable pair exists, use the warm-up hint.
+    If neither safe pair exists, use the best available diagnostic pair so the
+    saved event still explains an underpowered/risky build.
+    """
+
+    return (
+        recommendation.stable_hold
+        or recommendation.minimum_warmup
+        or recommendation.best_available
+    )
+
+
+def calculation_input_for_candidate(
+    calc_input: CalculationInput,
+    candidate: PowerDistanceCandidate | None,
+) -> CalculationInput:
+    """Return a calculation input using the selected recommendation candidate."""
+
+    if candidate is None:
+        return calc_input
+
+    return _with_candidate_power_and_distance(
+        calc_input=calc_input,
+        distance=candidate.distance,
+        power_percent=candidate.power_percent,
     )
 
 
@@ -296,9 +324,9 @@ def build_power_distance_recommendation(
         stable_hold=stable,
         scanned_count=len(candidates),
         note=(
-            "Heuristic helper: scans valid head range and 20-100% power using the selected "
-            "build and active modules. It deliberately ignores the current UI power slider. "
-            "Use as a starting hint, then calibrate with real outcomes."
+            "Heuristic helper: scans valid head range and 20-100% power using enabled "
+            "beam slots and selected active modules. It deliberately ignores placeholder "
+            "beam power values. Use as a starting hint, then calibrate with real outcomes."
         ),
         best_available=best_available,
         limiting_reason=limiting_reason,

@@ -18,6 +18,11 @@ EVENT_COLUMNS = [
     "resistance",
     "instability",
     "distance",
+    "scan_distance",
+    "training_observation_source",
+    "training_observation_phase",
+    "training_observation_distance",
+    "training_observation_power_percent",
     "beam_count",
     "beam_slots",
     "beam_power_sum",
@@ -296,6 +301,98 @@ def _count_observations(rows: list[dict], observation: str) -> int:
     actual_rows = _actual_observation_rows(rows)
     return sum(1 for row in actual_rows if row.get("observation") == observation)
 
+
+def _select_training_observation(rows: list[dict]) -> dict | None:
+    """Select the real in-game observation to use as the ML/analytics truth row.
+
+    Prefer actual stable hold, then actual warm-up, then any actual observation.
+    Formula rows are deliberately ignored.
+    """
+
+    actual_rows = _actual_observation_rows(rows)
+    if not actual_rows:
+        return None
+
+    def has_numeric_pair(row: dict) -> bool:
+        return row.get("distance") not in (None, "") and row.get("power_percent") not in (None, "")
+
+    numeric_rows = [row for row in actual_rows if has_numeric_pair(row)]
+    if not numeric_rows:
+        return None
+
+    for phase in ["stable", "warmup"]:
+        for row in numeric_rows:
+            if str(row.get("observation_phase", "unknown") or "unknown") == phase:
+                return row
+
+    for observation in ["stable_hold", "warmup"]:
+        for row in numeric_rows:
+            if row.get("observation") == observation:
+                return row
+
+    return numeric_rows[0]
+
+
+def _event_power_sum_from_observation(observation: dict | None, beam_count: int, fallback_sum: float) -> float:
+    if observation is None:
+        return fallback_sum
+    power = observation.get("power_percent")
+    if power in (None, ""):
+        return fallback_sum
+    return float(power) * max(int(beam_count), 1)
+
+
+def _aggregate_resource_rows(rows: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+
+    for row in rows:
+        name = str(row.get("resource_name", "unknown") or "unknown")
+        key = name.strip().lower()
+        if key not in grouped:
+            grouped[key] = {
+                "resource_name": name,
+                "resource_percent": 0.0,
+                "has_percent": False,
+                "raw_scu_estimate": 0.0,
+                "has_raw_scu": False,
+                "observed_window_size": set(),
+                "observed_charge_behavior": set(),
+                "comment": [],
+            }
+        bucket = grouped[key]
+        percent = row.get("resource_percent")
+        raw_scu = row.get("raw_scu_estimate")
+        if percent not in (None, ""):
+            bucket["resource_percent"] += float(percent)
+            bucket["has_percent"] = True
+        if raw_scu not in (None, ""):
+            bucket["raw_scu_estimate"] += float(raw_scu)
+            bucket["has_raw_scu"] = True
+        window = row.get("observed_window_size", "unknown")
+        charge = row.get("observed_charge_behavior", "unknown")
+        if window and window != "unknown":
+            bucket["observed_window_size"].add(window)
+        if charge and charge != "unknown":
+            bucket["observed_charge_behavior"].add(charge)
+        comment = str(row.get("comment", "") or "").strip()
+        if comment:
+            bucket["comment"].append(comment)
+
+    aggregated: list[dict] = []
+    for bucket in grouped.values():
+        window_values = bucket["observed_window_size"]
+        charge_values = bucket["observed_charge_behavior"]
+        aggregated.append({
+            "resource_name": bucket["resource_name"],
+            "resource_percent": round(bucket["resource_percent"], 3) if bucket["has_percent"] else None,
+            "raw_scu_estimate": round(bucket["raw_scu_estimate"], 3) if bucket["has_raw_scu"] else None,
+            "observed_window_size": next(iter(window_values)) if len(window_values) == 1 else "unknown",
+            "observed_charge_behavior": next(iter(charge_values)) if len(charge_values) == 1 else "unknown",
+            "comment": " | ".join(bucket["comment"]),
+        })
+
+    return aggregated
+
 def flatten_event(event: dict) -> dict:
     build = event.get("build", {})
     run_context = event.get("run_context", {})
@@ -310,9 +407,10 @@ def flatten_event(event: dict) -> dict:
     beams = event.get("beams", [])
 
     beam_slots = [beam.get("slot", "") for beam in beams]
-    beam_power_sum = sum(float(beam.get("power_percent", 0.0)) for beam in beams)
+    beam_count = len(beams)
+    event_beam_power_sum = sum(float(beam.get("power_percent", 0.0)) for beam in beams)
 
-    resources = _valid_resource_rows(resource_yield)
+    resources = _aggregate_resource_rows(_valid_resource_rows(resource_yield))
     resource_names = [row.get("resource_name", "unknown") for row in resources]
     resource_window_behaviors = [row.get("observed_window_size", "unknown") for row in resources if row.get("observed_window_size", "unknown") != "unknown"]
     resource_charge_behaviors = [row.get("observed_charge_behavior", "unknown") for row in resources if row.get("observed_charge_behavior", "unknown") != "unknown"]
@@ -320,6 +418,25 @@ def flatten_event(event: dict) -> dict:
     refined_resources = _valid_refined_resource_rows(refinery)
     refined_resource_names = [row.get("resource_name", "unknown") for row in refined_resources]
     calibration_observations = _valid_calibration_observation_rows(calibration)
+    training_observation = _select_training_observation(calibration_observations)
+    scan_distance = rock.get("distance")
+    training_distance = (
+        training_observation.get("distance") if training_observation is not None else scan_distance
+    )
+    training_power_percent = (
+        training_observation.get("power_percent") if training_observation is not None else None
+    )
+    beam_power_sum = _event_power_sum_from_observation(
+        training_observation,
+        beam_count=beam_count,
+        fallback_sum=event_beam_power_sum,
+    )
+    training_source = "actual" if training_observation is not None else "event_snapshot"
+    training_phase = (
+        training_observation.get("observation_phase", "unknown")
+        if training_observation is not None
+        else "unknown"
+    )
 
     return {
         "event_id": event.get("event_id"),
@@ -334,8 +451,13 @@ def flatten_event(event: dict) -> dict:
         "mass": rock.get("mass"),
         "resistance": rock.get("resistance"),
         "instability": rock.get("instability"),
-        "distance": rock.get("distance"),
-        "beam_count": len(beams),
+        "distance": training_distance,
+        "scan_distance": scan_distance,
+        "training_observation_source": training_source,
+        "training_observation_phase": training_phase,
+        "training_observation_distance": training_distance if training_observation is not None else None,
+        "training_observation_power_percent": training_power_percent,
+        "beam_count": beam_count,
         "beam_slots": ", ".join(beam_slots),
         "beam_power_sum": beam_power_sum,
         "required_power": result.get("required_power"),
@@ -355,9 +477,9 @@ def flatten_event(event: dict) -> dict:
         "ml_prediction_captured_at": ml_prediction.get("captured_at", ""),
         "actual_outcome": outcome.get("actual_outcome", "unknown"),
         "outcome_comment": outcome.get("comment", ""),
-        "primary_resource": resource_yield.get("primary_resource", "unknown"),
-        "resource_percent": resource_yield.get("resource_percent"),
-        "raw_scu_estimate": resource_yield.get("raw_scu_estimate"),
+        "primary_resource": dominant_resource_row.get("resource_name", resource_yield.get("primary_resource", "unknown")),
+        "resource_percent": dominant_resource_row.get("resource_percent", resource_yield.get("resource_percent")),
+        "raw_scu_estimate": dominant_resource_row.get("raw_scu_estimate", resource_yield.get("raw_scu_estimate")),
         "total_scu_estimate": resource_yield.get("total_scu_estimate"),
         "refined_scu_estimate": resource_yield.get("refined_scu_estimate"),
         "estimated_value_auec": resource_yield.get("estimated_value_auec"),

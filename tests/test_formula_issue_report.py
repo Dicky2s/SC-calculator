@@ -115,3 +115,44 @@ def test_legacy_four_row_formula_issue_comment_is_inferred_as_formula_then_actua
     assert flat["calibration_attempt_count"] == 2
     assert [row["observation_source"] for row in attempts] == ["formula", "formula", "actual", "actual"]
     assert [row["observation_phase"] for row in attempts] == ["warmup", "stable", "warmup", "stable"]
+
+
+def test_actual_stable_observation_becomes_training_power_distance():
+    formula_warmup = formula_candidate_to_observation(make_candidate(15, 47), phase="warmup")
+    formula_stable = formula_candidate_to_observation(make_candidate(16, 50), phase="stable")
+    actual_warmup = actual_power_to_observation(distance=15, power_percent=37, phase="warmup")
+    actual_stable = actual_power_to_observation(distance=22, power_percent=48, phase="stable")
+
+    event = {
+        "event_id": "event-actual-truth",
+        "session_id": "session-1",
+        "timestamp": "2026-05-27T12:43:00+00:00",
+        "source": "manual_ui",
+        "build": {"build_id": "prospector", "ship_type": "prospector"},
+        "rock": {"mass": 5245, "resistance": 0.39, "instability": 1.1216, "distance": 15},
+        "beams": [{"slot": "main", "power_percent": 20, "active_modules": []}],
+        "result": {"required_power": 1719.672, "effective_power": 787.5, "margin": -932.172, "risk_score": 0.3, "verdict": "need_more_power"},
+        "outcome": {"actual_outcome": "unknown", "comment": ""},
+        "resource_yield": {},
+        "refinery": {},
+        "calibration": {
+            "formula_issue_flag": True,
+            "observations": [
+                formula_warmup.model_dump(),
+                formula_stable.model_dump(),
+                actual_warmup.model_dump(),
+                actual_stable.model_dump(),
+            ],
+        },
+        "labeling": {},
+    }
+
+    flat = flatten_event(event)
+
+    assert flat["scan_distance"] == 15
+    assert flat["distance"] == 22
+    assert flat["beam_power_sum"] == 48
+    assert flat["training_observation_source"] == "actual"
+    assert flat["training_observation_phase"] == "stable"
+    assert flat["training_observation_distance"] == 22
+    assert flat["training_observation_power_percent"] == 48

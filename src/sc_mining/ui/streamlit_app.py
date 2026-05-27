@@ -10,13 +10,18 @@ from sc_mining.ui.table_utils import make_arrow_safe_dataframe
 import streamlit as st
 
 from sc_mining.domain.calculator import calculate
-from sc_mining.domain.recommendations import build_power_distance_recommendation
+from sc_mining.domain.recommendations import (
+    build_power_distance_recommendation,
+    calculation_input_for_candidate,
+    recommendation_to_dict,
+    select_recommendation_candidate,
+)
 from sc_mining.domain.calibration_report import (
     actual_power_to_observation,
     formula_candidate_to_observation,
     formula_issue_report_rows,
 )
-from sc_mining.domain.resource_math import build_resource_scu_preview_rows
+from sc_mining.domain.resource_math import aggregate_resources_by_name, build_resource_scu_preview_rows
 from sc_mining.domain.resource_prices import load_resource_price_config
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules, load_resources
 from sc_mining.dataset.exporter import build_dataset, export_dataset, get_dataset_export_summary
@@ -227,8 +232,71 @@ def list_build_files() -> list[Path]:
 
 
 
-def build_profile_label(build) -> str:
-    return f"{build.build_id} ({len(build.heads)} beam slot{'s' if len(build.heads) != 1 else ''})"
+def module_display_name(module_id: str, modules: dict) -> str:
+    module = modules.get(module_id)
+    return module.name if module is not None else module_id
+
+
+def head_display_name(head_id: str, heads: dict) -> str:
+    head = heads.get(head_id)
+    return head.name if head is not None else head_id
+
+
+def compact_module_list(module_ids: list[str], modules: dict) -> str:
+    if not module_ids:
+        return "no modules"
+
+    ordered_names: list[str] = []
+    counts: dict[str, int] = {}
+    for module_id in module_ids:
+        name = module_display_name(module_id, modules)
+        if name not in counts:
+            ordered_names.append(name)
+            counts[name] = 0
+        counts[name] += 1
+
+    parts = [
+        f"{counts[name]}× {name}" if counts[name] > 1 else name
+        for name in ordered_names
+    ]
+    return " + ".join(parts)
+
+
+def build_loadout_text_lines(build, heads: dict, modules: dict) -> list[str]:
+    lines: list[str] = []
+    for head in build.heads:
+        head_name = head_display_name(head.head_id, heads)
+        module_text = compact_module_list(head.modules, modules)
+        lines.append(f"{head.slot}: {head_name} + {module_text}")
+    return lines
+
+
+def build_profile_label(build, heads: dict, modules: dict) -> str:
+    ship_name = str(build.ship_type).title()
+
+    if len(build.heads) == 1:
+        head = build.heads[0]
+        return (
+            f"{ship_name} — {head_display_name(head.head_id, heads)} — "
+            f"{compact_module_list(head.modules, modules)}"
+        )
+
+    first = build.heads[0]
+    same_loadout = all(
+        head.head_id == first.head_id and head.modules == first.modules
+        for head in build.heads
+    )
+    if same_loadout:
+        return (
+            f"{ship_name} — {len(build.heads)}× {head_display_name(first.head_id, heads)} — "
+            f"{compact_module_list(first.modules, modules)}"
+        )
+
+    slot_summary = "; ".join(
+        f"{head.slot} {head_display_name(head.head_id, heads)} / {compact_module_list(head.modules, modules)}"
+        for head in build.heads
+    )
+    return f"{ship_name} — {slot_summary}"
 
 
 def build_loadout_rows(build, modules: dict) -> list[dict]:
@@ -251,10 +319,12 @@ def build_loadout_rows(build, modules: dict) -> list[dict]:
 def format_verdict(verdict: str) -> str:
     if verdict == "take":
         return "TAKE"
+    if verdict == "edge_take":
+        return "EDGE TAKE"
     if verdict == "risky":
         return "RISKY"
     if verdict == "skip":
-        return "SKIP"
+        return "TOO MUCH POWER"
     if verdict == "need_more_power":
         return "NEED MORE POWER"
     return verdict.upper()
@@ -411,8 +481,10 @@ def _clean_refined_resource_rows(rows: list[dict]) -> list[RefinedResourceOutput
 
         refined_missing = refined_scu_actual in (None, "") or pd.isna(refined_scu_actual)
         sell_missing = sell_value_auec in (None, "") or pd.isna(sell_value_auec)
+        refined_empty = refined_missing or float(refined_scu_actual or 0.0) <= 0.0
+        sell_empty = sell_missing or float(sell_value_auec or 0.0) <= 0.0
 
-        if resource_name == "unknown" and refined_missing and sell_missing and not comment.strip():
+        if resource_name == "unknown" and refined_empty and sell_empty and not comment.strip():
             continue
 
         refined_resources.append(
@@ -496,13 +568,14 @@ def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calcu
     resources = _clean_resource_rows(edited_resources.to_dict("records"))
     total_scu_value = total_scu_estimate if total_scu_estimate > 0 else None
     resources = _fill_resource_scu_from_total(resources, total_scu_value)
+    summary_resources = aggregate_resources_by_name(resources)
 
     auto_estimated_value_auec: float | None = None
 
-    if resources:
+    if summary_resources:
         price_config = load_resource_price_config(RESOURCE_PRICES_PATH)
         market_preview_rows = build_resource_scu_preview_rows(
-            resources,
+            summary_resources,
             total_scu_estimate=total_scu_value,
             prices=price_config.get("prices", {}),
         )
@@ -536,7 +609,7 @@ def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calcu
         with st.expander("Auto-derived resource preview", expanded=False):
             st.caption(
                 "This is a calculated preview: Derived raw SCU = Composition total SCU × Scan % / 100. "
-                "Estimated value uses configs/resource_prices.yaml. If you type a real Raw SCU manually, that value is preserved."
+                "Estimated value uses configs/resource_prices.yaml. Duplicate resource rows are grouped in this preview; raw input rows are still saved for traceability."
             )
             total_col1, total_col2, total_col3 = st.columns(3)
             total_col1.metric("Total scan %", f"{total_percent:.2f}")
@@ -588,8 +661,8 @@ def render_resource_yield_form(resource_profiles: dict, key_prefix: str = "calcu
     resource_percent = None
     raw_scu_estimate = None
 
-    if resources:
-        primary = max(resources, key=lambda item: item.resource_percent or 0.0)
+    if summary_resources:
+        primary = max(summary_resources, key=lambda item: item.resource_percent or 0.0)
         primary_resource = primary.resource_name
         resource_percent = primary.resource_percent
         raw_scu_estimate = primary.raw_scu_estimate
@@ -1096,8 +1169,9 @@ def render_power_distance_limit_hint(recommendation) -> None:
 def render_power_distance_helper(calc_input, heads, modules):
     st.subheader("Power / distance helper")
     st.caption(
-        "Formula-based hint for the selected rock/build. It scans power around the current distance instead of using the current beam slider value. "
-        "If the helper returns no pair, the diagnostic below explains whether the build is underpowered or the pairs were rejected as risky."
+        "Formula-based hint for the selected rock/build. It scans 20-100% power around the current distance, "
+        "so a separate manual power slider is not needed. If the helper returns no pair, the diagnostic below "
+        "explains whether the build is underpowered or the pairs were rejected as risky."
     )
 
     recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
@@ -1156,6 +1230,37 @@ def render_run_context_sidebar() -> RunContext:
     """
 
     return RunContext()
+
+
+def refresh_streamlit_app() -> None:
+    """Clear Streamlit caches and force a clean app rerun."""
+
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+    try:
+        st.cache_resource.clear()
+    except Exception:
+        pass
+
+    st.rerun()
+
+
+def render_refresh_button(location=st.sidebar) -> None:
+    """Render a manual refresh control for reloading files without browser restart."""
+
+    location.subheader("Refresh")
+    if location.button(
+        "Refresh app / reload data",
+        key="global_refresh_app_reload_data",
+        help=(
+            "Reloads configs, saved events, model status and current UI calculations. "
+            "Use this after saving/updating data instead of refreshing the browser tab."
+        ),
+    ):
+        refresh_streamlit_app()
 
 
 def format_event_option(row: pd.Series) -> str:
@@ -2742,12 +2847,16 @@ def render_calculator_tab(
         "Examples: scan 30% becomes 0.3000; scan 284.74% becomes 2.8474."
     )
 
-    st.markdown("### Step 2 — Beam states")
+    st.markdown("### Step 2 — Beam setup")
+    st.caption(
+        "Select which mining beams and active modules are participating. Power % is calculated by the helper in Step 3; "
+        "the app no longer asks for a manual power slider here."
+    )
 
     beams: list[BeamState] = []
 
     for head in build.heads:
-        col_a, col_b, col_c = st.columns([1, 2, 2])
+        col_a, col_b = st.columns([1, 3])
 
         default_enabled = head.slot in {"main", "left"}
         installed_active_modules = [
@@ -2764,18 +2873,6 @@ def render_calculator_tab(
             )
 
         with col_b:
-            power = st.slider(
-                f"Power %: {head.slot}",
-                min_value=20,
-                max_value=100,
-                value=20,
-                step=1,
-                disabled=not enabled,
-                key=f"{key_prefix}_{head.slot}_power",
-                help="Mining laser power starts at 20%; distance changes delivered effective power.",
-            )
-
-        with col_c:
             active_modules = st.multiselect(
                 f"Active modules: {head.slot}",
                 options=installed_active_modules,
@@ -2789,7 +2886,7 @@ def render_calculator_tab(
             beams.append(
                 BeamState(
                     slot=head.slot,
-                    power_percent=float(power),
+                    power_percent=20.0,
                     active_modules=list(active_modules),
                 )
             )
@@ -2805,14 +2902,33 @@ def render_calculator_tab(
         beams=beams,
     )
 
-    result = calculate(calc_input, heads=heads, modules=modules)
-
-    st.markdown("### Step 3 — Formula result / helper")
-    render_result_metrics(result)
-
+    st.markdown("### Step 3 — Formula recommendation")
     power_distance_recommendation = render_power_distance_helper(calc_input, heads=heads, modules=modules)
+    selected_candidate = select_recommendation_candidate(power_distance_recommendation)
+    formula_calc_input = calculation_input_for_candidate(calc_input, selected_candidate)
+    formula_result = calculate(formula_calc_input, heads=heads, modules=modules)
 
-    ml_comparison = render_calculator_ml_comparison(calc_input, result, key_prefix=key_prefix)
+    st.markdown("**Formula diagnostic snapshot**")
+    if selected_candidate is None:
+        st.caption(
+            "No recommendation candidate was found. Save keeps only the scan/build snapshot; actual calibration rows remain the training truth."
+        )
+    else:
+        candidate_kind = (
+            "stable hold"
+            if selected_candidate == power_distance_recommendation.stable_hold
+            else "minimum warm-up"
+            if selected_candidate == power_distance_recommendation.minimum_warmup
+            else "best available diagnostic pair"
+        )
+        st.caption(
+            f"Diagnostic uses {candidate_kind}: {selected_candidate.distance:.0f}m / {selected_candidate.power_percent:.0f}%. "
+            "This is saved as formula context, not as the real in-game beam state."
+        )
+        render_result_metrics(formula_result)
+
+    event_result = calculate(calc_input, heads=heads, modules=modules)
+    ml_comparison = render_calculator_ml_comparison(formula_calc_input, formula_result, key_prefix=key_prefix)
 
     outcome = render_outcome_form(key_prefix=key_prefix)
     resource_yield = render_resource_yield_form(resource_profiles=resource_profiles, key_prefix=key_prefix)
@@ -2837,7 +2953,7 @@ def render_calculator_tab(
             path=EVENTS_PATH,
             session_id=session_id,
             calc_input=calc_input,
-            result=result,
+            result=event_result,
             source=source,
             outcome=outcome,
             resource_yield=resource_yield,
@@ -2849,6 +2965,7 @@ def render_calculator_tab(
                 if ml_comparison is not None and ml_comparison.model_available
                 else None
             ),
+            formula_recommendation=recommendation_to_dict(power_distance_recommendation),
         )
 
         st.success(f"Saved event: {event['event_id']}")
@@ -2859,11 +2976,16 @@ def render_calculator_tab(
         {"metric": "session_id", "value": str(session_id)},
         {"metric": "build_id", "value": str(build.build_id)},
         {"metric": "ship_type", "value": str(build.ship_type)},
-        {"metric": "required_power", "value": str(result.required_power)},
-        {"metric": "effective_power", "value": str(result.effective_power)},
-        {"metric": "margin", "value": str(result.margin)},
-        {"metric": "risk_score", "value": str(result.risk_score)},
-        {"metric": "verdict", "value": str(result.verdict)},
+        {"metric": "event_snapshot_required_power", "value": str(event_result.required_power)},
+        {"metric": "event_snapshot_effective_power", "value": str(event_result.effective_power)},
+        {"metric": "event_snapshot_margin", "value": str(event_result.margin)},
+        {"metric": "event_snapshot_risk_score", "value": str(event_result.risk_score)},
+        {"metric": "event_snapshot_verdict", "value": str(event_result.verdict)},
+        {"metric": "formula_diagnostic_required_power", "value": str(formula_result.required_power)},
+        {"metric": "formula_diagnostic_effective_power", "value": str(formula_result.effective_power)},
+        {"metric": "formula_diagnostic_margin", "value": str(formula_result.margin)},
+        {"metric": "formula_diagnostic_risk_score", "value": str(formula_result.risk_score)},
+        {"metric": "formula_diagnostic_verdict", "value": str(formula_result.verdict)},
         {"metric": "actual_outcome", "value": str(outcome.actual_outcome)},
         {"metric": "primary_resource", "value": str(resource_yield.primary_resource)},
         {"metric": "resource_percent", "value": str(resource_yield.resource_percent)},
@@ -2873,6 +2995,14 @@ def render_calculator_tab(
         {"metric": "calibration_attempts", "value": str(len(calibration.observations))},
         {"metric": "formula_issue_flag", "value": str(calibration.formula_issue_flag)},
         {
+            "metric": "selected_formula_distance",
+            "value": str(selected_candidate.distance if selected_candidate is not None else None),
+        },
+        {
+            "metric": "selected_formula_power_percent",
+            "value": str(selected_candidate.power_percent if selected_candidate is not None else None),
+        },
+        {
             "metric": "ml_prediction_logged_on_save",
             "value": str(ml_comparison is not None and ml_comparison.model_available),
         },
@@ -2881,9 +3011,9 @@ def render_calculator_tab(
     df = pd.DataFrame(rows)
     display_safe_dataframe(df, width="stretch")
 
-    if result.notes:
-        st.subheader("Notes")
-        for note in result.notes:
+    if formula_result.notes:
+        st.subheader("Formula diagnostic notes")
+        for note in formula_result.notes:
             st.write(f"- {note}")
 
 
@@ -3033,8 +3163,18 @@ def render_event_history_viewer(df: pd.DataFrame) -> None:
 
 
 def render_saved_events_tab() -> None:
-    st.subheader("Saved events")
-    st.write(f"Source: `{EVENTS_PATH}`")
+    header_col, refresh_col = st.columns([4, 1])
+    with header_col:
+        st.subheader("Saved events")
+        st.write(f"Source: `{EVENTS_PATH}`")
+    with refresh_col:
+        st.write("")
+        if st.button(
+            "Refresh events",
+            key="saved_events_refresh_events",
+            help="Reload saved events from the JSONL file without restarting the browser tab.",
+        ):
+            refresh_streamlit_app()
 
     df = load_events_dataframe(EVENTS_PATH)
     summary = get_events_summary(df)
@@ -3353,6 +3493,8 @@ def main() -> None:
     st.title("SC Mining Assistant")
     st.caption("Manual baseline calculator + event logger + outcome-labeled dataset viewer")
 
+    render_refresh_button()
+
     heads = load_heads(CONFIG_DIR / "heads.yaml")
     modules = load_modules(CONFIG_DIR / "modules.yaml")
     resource_profiles = load_resources(RESOURCES_CONFIG)
@@ -3385,27 +3527,43 @@ def main() -> None:
         for path in build_files
         if build_by_path[path].ship_type == selected_ship
     ]
+    filtered_build_options = [str(path) for path in filtered_build_files]
 
-    build_file = st.sidebar.selectbox(
-        "Build profile",
-        filtered_build_files,
-        format_func=lambda path: build_profile_label(build_by_path[path]),
+    selected_build_state_key = "selected_build_profile_path"
+    selected_ship_build_state_key = f"selected_build_profile_path__{selected_ship}"
+    remembered_build = st.session_state.get(
+        selected_ship_build_state_key,
+        st.session_state.get(selected_build_state_key),
     )
+    if remembered_build not in filtered_build_options:
+        remembered_build = filtered_build_options[0]
+    st.session_state[selected_build_state_key] = remembered_build
 
+    selected_build_path = st.sidebar.selectbox(
+        "Build profile",
+        filtered_build_options,
+        key=selected_build_state_key,
+        format_func=lambda path_text: build_profile_label(
+            build_by_path[Path(path_text)],
+            heads,
+            modules,
+        ),
+        help="Readable loadout label. The selected build is kept in session state across app refresh/rerun.",
+    )
+    st.session_state[selected_ship_build_state_key] = selected_build_path
+
+    build_file = Path(selected_build_path)
     build = build_by_path[build_file]
 
     st.sidebar.subheader("Current build")
-    st.sidebar.write(f"Build ID: `{build.build_id}`")
-    st.sidebar.write(f"Ship: `{build.ship_type}`")
+    st.sidebar.write(f"Loadout: **{build_profile_label(build, heads, modules)}**")
+    st.sidebar.write(f"Technical ID: `{build.build_id}`")
     st.sidebar.write(f"File: `{build_file.name}`")
-    st.sidebar.caption("To change ship/loadout, select Ship and then Build profile.")
+    st.sidebar.caption("The selected build is preserved when you press Refresh. Change Ship or Build profile only when you want a different loadout.")
 
     with st.sidebar.expander("Selected loadout", expanded=True):
-        display_safe_dataframe(
-            pd.DataFrame(build_loadout_rows(build, modules)),
-            width="stretch",
-            hide_index=True,
-        )
+        for line in build_loadout_text_lines(build, heads, modules):
+            st.markdown(f"- {line}")
 
     calculator_tab, saved_events_tab = st.tabs([
         "General calculator",

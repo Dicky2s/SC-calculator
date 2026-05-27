@@ -44,3 +44,19 @@ def test_inert_materials_alias_uses_inert_material_price():
 
     assert normalize_resource_name("inert_materials") == "inert_material"
     assert get_resource_price("inert_materials", prices) == 0
+
+
+def test_duplicate_resource_rows_are_grouped_in_market_preview():
+    resources = [
+        ResourceComponent(resource_name="beryl", resource_percent=8.87, raw_scu_estimate=1.473),
+        ResourceComponent(resource_name="beryl", resource_percent=60.38, raw_scu_estimate=10.029),
+        ResourceComponent(resource_name="inert_materials", resource_percent=30.82, raw_scu_estimate=5.119),
+    ]
+    prices = {"beryl": 2766, "inert_material": 0}
+
+    rows = build_resource_scu_preview_rows(resources, total_scu_estimate=16.61, prices=prices)
+
+    assert [row["resource_name"] for row in rows] == ["beryl", "inert_materials", "TOTAL"]
+    assert rows[0]["scan_percent"] == 69.25
+    assert rows[0]["saved_raw_scu"] == 11.502
+    assert rows[-1]["scan_percent"] == 100.07
