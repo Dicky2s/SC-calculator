@@ -18,6 +18,9 @@ DEFAULT_MAX_RANGE_METERS = 45.0
 MIN_DISTANCE_EFFICIENCY_AT_MAX_RANGE = 0.35
 STABLE_TAKE_MARGIN_RATIO = 0.10
 ALMOST_MARGIN_RATIO = 0.90
+RAW_REQUIRED_POWER_PER_MASS = 0.20
+RESISTANCE_REQUIRED_POWER_WEIGHT = 1.0
+
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -93,20 +96,24 @@ def distance_efficiency(distance: float) -> float:
 
 
 def calculate_required_power(rock: RockInput) -> float:
-    """Approximate raw power needed to start a stable warm-up.
+    """Approximate raw power needed for first rock reaction.
 
-    Community calibration model:
-        required = mass * 0.2 / (1 - resistance)
+    Earlier builds used ``mass * 0.2 / (1 - resistance)``. Real calibration
+    rows showed that this over-pushed resistant rocks: the helper could suggest
+    values that reacted, but then immediately overheated/climbed too hard.
+
+    The current field calibration uses a gentler resistance response:
+        required = mass * 0.20 * (1 + resistance)
 
     `resistance` is stored as a fraction in this app: 47% -> 0.47.
-    Instability affects risk/control, not the basic mass threshold.
+    Instability affects risk/control, not the basic first-reaction threshold.
     Distance affects delivered beam power, not rock difficulty.
     """
-    if rock.resistance >= 1.0:
-        raise ValueError("Rock resistance must be below 100%")
+    if rock.resistance < 0:
+        raise ValueError("Rock resistance must not be negative")
 
-    resistance_factor = 1.0 - float(rock.resistance)
-    return float(rock.mass) * 0.2 / resistance_factor
+    resistance_factor = 1.0 + float(rock.resistance) * RESISTANCE_REQUIRED_POWER_WEIGHT
+    return float(rock.mass) * RAW_REQUIRED_POWER_PER_MASS * resistance_factor
 
 
 def find_head_build(build: BuildProfile, slot: str):

@@ -63,7 +63,7 @@ OPTIONAL_MISSING_COLUMNS = {
 }
 
 NUMERIC_SANITY_RULES: dict[str, dict[str, float | None]] = {
-    "mass": {"min": 1.0, "max": 500_000.0},
+    "mass": {"min": 100.0, "max": 500_000.0},
     "resistance": {"min": 0.0, "max": 1.0},
     "instability": {"min": 0.0, "max": 10.0},
     "distance": {"min": 1.0, "max": 500.0},
@@ -262,7 +262,11 @@ def build_quality_report(
                     check="numeric_min",
                     column=column,
                     count=below_min_count,
-                    message=f"Column {column} has values below {min_value}.",
+                    message=(
+                        f"Column {column} has values below {min_value}."
+                        if column != "mass"
+                        else "Mass values below 100 look like broken thousands parsing and are excluded from supervised training."
+                    ),
                 )
 
         if max_value is not None:

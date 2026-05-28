@@ -17,6 +17,7 @@ from sklearn.preprocessing import OneHotEncoder
 
 from sc_mining.dataset.exporter import NUMERIC_COLUMNS
 from sc_mining.storage.event_reader import LABELED_OUTCOME_VALUES
+from sc_mining.domain.scan_parsing import is_valid_training_mass
 
 
 MODEL_VERSION = "baseline_rf_v1"
@@ -114,6 +115,13 @@ def prepare_training_frame(dataset: pd.DataFrame) -> pd.DataFrame:
 
     working = _normalize_dataset(dataset)
     labeled = working[working["is_labeled"]].copy()
+
+    # Guard against broken scan parsing such as mass=4.666 where the in-game
+    # value was almost certainly 4666. These rows are still visible in analytics
+    # and quality reports, but they are excluded from supervised training.
+    if not labeled.empty and "mass" in labeled.columns:
+        labeled = labeled[labeled["mass"].apply(is_valid_training_mass)].copy()
+
     return labeled[FEATURE_COLUMNS + ["actual_outcome", TARGET_COLUMN]]
 
 

@@ -26,13 +26,31 @@ class PowerDistanceCandidate:
 
 @dataclass(frozen=True)
 class PowerDistanceRecommendation:
-    minimum_warmup: PowerDistanceCandidate | None
+    # New semantic split:
+    # - minimum_reaction: first point where the rock reacts; may be too slow/stalled.
+    # - recommended_warmup: practical charge-up point with extra margin over minimum.
+    # - stable_hold: lower/near-threshold point for keeping charge after entering the window.
+    # - upper_safe: last comfortable point before overpower/overshoot risk gets high.
+    minimum_reaction: PowerDistanceCandidate | None
+    recommended_warmup: PowerDistanceCandidate | None
     stable_hold: PowerDistanceCandidate | None
+    upper_safe: PowerDistanceCandidate | None
     scanned_count: int
     note: str
     best_available: PowerDistanceCandidate | None
     limiting_reason: str
     required_multiplier: float | None
+
+    @property
+    def minimum_warmup(self) -> PowerDistanceCandidate | None:
+        """Backward-compatible alias for older UI/tests/datasets.
+
+        Older code called this value ``minimum_warmup``. The new wording is
+        ``minimum_reaction`` because it can heat too slowly to be a practical
+        warm-up recommendation.
+        """
+
+        return self.minimum_reaction
 
 
 def _candidate_to_dict(candidate: PowerDistanceCandidate | None) -> dict | None:
@@ -40,9 +58,14 @@ def _candidate_to_dict(candidate: PowerDistanceCandidate | None) -> dict | None:
 
 
 def recommendation_to_dict(recommendation: PowerDistanceRecommendation) -> dict:
+    minimum_reaction = _candidate_to_dict(recommendation.minimum_reaction)
     return {
-        "minimum_warmup": _candidate_to_dict(recommendation.minimum_warmup),
+        "minimum_reaction": minimum_reaction,
+        # Backward-compatible key kept for already-written analysis code.
+        "minimum_warmup": minimum_reaction,
+        "recommended_warmup": _candidate_to_dict(recommendation.recommended_warmup),
         "stable_hold": _candidate_to_dict(recommendation.stable_hold),
+        "upper_safe": _candidate_to_dict(recommendation.upper_safe),
         "best_available": _candidate_to_dict(recommendation.best_available),
         "scanned_count": recommendation.scanned_count,
         "note": recommendation.note,
@@ -149,22 +172,65 @@ def scan_power_distance_grid(
     return candidates
 
 
-def choose_minimum_warmup(candidates: list[PowerDistanceCandidate]) -> PowerDistanceCandidate | None:
-    """Find the gentlest pair that can start a successful warm-up.
+def _distance_priority(candidate: PowerDistanceCandidate, current_distance: float) -> tuple[int, float]:
+    distance_delta = abs(candidate.distance - current_distance)
+    return (0 if distance_delta <= 5 else 1, distance_delta)
 
-    We require non-negative margin and avoid pairs the current rule-based risk
-    logic marks as skip. Sorting favors lower power first, then safer/lower risk,
-    then longer distance to avoid close-range overshoot.
+
+def _safe_reaction_candidates(candidates: list[PowerDistanceCandidate]) -> list[PowerDistanceCandidate]:
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.margin >= 0
+        and candidate.risk_score < 0.75
+        and candidate.verdict not in {"skip", "need_more_power"}
+    ]
+
+
+def choose_minimum_reaction(
+    candidates: list[PowerDistanceCandidate],
+    current_distance: float,
+) -> PowerDistanceCandidate | None:
+    """Find the first point where the rock reacts.
+
+    This is intentionally a threshold, not the main practical recommendation.
+    In-game this can mean "it starts warming but does not really climb".
     """
 
+    # First reaction is a threshold detector, so it must not require the same
+    # low-risk band as a practical warm-up recommendation. High-instability
+    # rocks can have a real first reaction at a risk score above 0.75.
     valid = [
         candidate
         for candidate in candidates
-        if candidate.margin >= 0 and candidate.risk_score < 0.75
+        if candidate.margin >= 0
+        and candidate.verdict not in {"skip", "need_more_power"}
+        and candidate.risk_score < 0.90
     ]
     if not valid:
         return None
 
+    return sorted(
+        valid,
+        key=lambda candidate: (
+            *_distance_priority(candidate, current_distance),
+            candidate.power_percent,
+            candidate.risk_score,
+            abs(candidate.margin_ratio),
+        ),
+    )[0]
+
+
+def choose_minimum_warmup(candidates: list[PowerDistanceCandidate]) -> PowerDistanceCandidate | None:
+    """Backward-compatible wrapper for older tests/callers.
+
+    Without current-distance context it behaves like the old helper: lowest safe
+    power first.
+    """
+
+    valid = _safe_reaction_candidates(candidates)
+    if not valid:
+        return None
     return sorted(
         valid,
         key=lambda candidate: (
@@ -176,28 +242,93 @@ def choose_minimum_warmup(candidates: list[PowerDistanceCandidate]) -> PowerDist
     )[0]
 
 
-def choose_stable_hold(candidates: list[PowerDistanceCandidate]) -> PowerDistanceCandidate | None:
-    """Find a comfortable pair for holding the laser roughly in one place.
+def choose_recommended_warmup(
+    candidates: list[PowerDistanceCandidate],
+    current_distance: float,
+    minimum_reaction: PowerDistanceCandidate | None,
+) -> PowerDistanceCandidate | None:
+    """Find a conservative charge-up point above the first reaction threshold.
 
-    Target band is intentionally conservative: slightly above required power but
-    not too far above it. This should be refined by real gameplay data later.
+    In-game calibration showed that the old warm-up target was too aggressive:
+    the rock reacted, but the suggested value could immediately overheat or
+    keep climbing. The helper now adds only a small buffer over first reaction.
+    If this still warms without growth, the user should add 1-3% and record the
+    actual point; that observation is more valuable than a hard-coded global
+    offset.
     """
 
-    target_margin_ratio = 0.12
+    if minimum_reaction is None:
+        return None
+
+    target_margin_ratio = max(0.035, minimum_reaction.margin_ratio + 0.02)
+    minimum_power = min(100.0, minimum_reaction.power_percent + 1.0)
+    valid = [
+        candidate
+        for candidate in _safe_reaction_candidates(candidates)
+        if candidate.power_percent >= minimum_power
+        and 0.01 <= candidate.margin_ratio <= 0.14
+        and candidate.risk_score < 0.72
+    ]
+
+    if not valid:
+        valid = [
+            candidate
+            for candidate in _safe_reaction_candidates(candidates)
+            if candidate.power_percent >= minimum_power
+            and candidate.risk_score < 0.74
+        ]
+
+    if not valid:
+        return minimum_reaction
+
+    return sorted(
+        valid,
+        key=lambda candidate: (
+            *_distance_priority(candidate, current_distance),
+            abs(candidate.margin_ratio - target_margin_ratio),
+            candidate.power_percent,
+            candidate.risk_score,
+        ),
+    )[0]
+
+
+def choose_stable_hold(
+    candidates: list[PowerDistanceCandidate],
+    current_distance: float,
+    recommended_warmup: PowerDistanceCandidate | None = None,
+    minimum_reaction: PowerDistanceCandidate | None = None,
+) -> PowerDistanceCandidate | None:
+    """Find a conservative hold point after the rock is already warming.
+
+    Hold power can be slightly below the cold-start reaction threshold because
+    the goal is to maintain charge after entering/approaching the green window,
+    not to start from zero. Therefore this selector allows a small negative
+    margin band and prefers a value below minimum reaction when available.
+    """
+
+    upper_power = recommended_warmup.power_percent if recommended_warmup is not None else 100.0
+    if minimum_reaction is not None:
+        upper_power = min(upper_power, minimum_reaction.power_percent)
+
+    target_margin_ratio = -0.015
     valid = [
         candidate
         for candidate in candidates
-        if 0.03 <= candidate.margin_ratio <= 0.25
-        and candidate.risk_score < 0.55
-        and candidate.verdict in {"take", "edge_take"}
+        if candidate.power_percent <= upper_power
+        and -0.055 <= candidate.margin_ratio <= 0.025
+        and candidate.risk_score < 0.72
+        and candidate.verdict != "skip"
     ]
-    if not valid:
-        fallback = [
+
+    if not valid and minimum_reaction is not None:
+        valid = [
             candidate
             for candidate in candidates
-            if candidate.margin >= 0 and candidate.risk_score < 0.60
+            if candidate.power_percent <= upper_power
+            and -0.08 <= candidate.margin_ratio <= max(0.04, minimum_reaction.margin_ratio + 0.005)
+            and candidate.risk_score < 0.78
+            and candidate.verdict != "skip"
         ]
-        valid = fallback
 
     if not valid:
         return None
@@ -205,10 +336,35 @@ def choose_stable_hold(candidates: list[PowerDistanceCandidate]) -> PowerDistanc
     return sorted(
         valid,
         key=lambda candidate: (
+            *_distance_priority(candidate, current_distance),
             abs(candidate.margin_ratio - target_margin_ratio),
-            candidate.risk_score,
-            abs(candidate.distance - 25.0),
             candidate.power_percent,
+            candidate.risk_score,
+        ),
+    )[0]
+
+
+def choose_upper_safe(
+    candidates: list[PowerDistanceCandidate],
+    current_distance: float,
+) -> PowerDistanceCandidate | None:
+    """Find the highest still-comfortable power before likely overshoot."""
+
+    valid = [
+        candidate
+        for candidate in _safe_reaction_candidates(candidates)
+        if candidate.margin_ratio <= 0.45
+        and candidate.risk_score < 0.72
+    ]
+    if not valid:
+        return None
+
+    return sorted(
+        valid,
+        key=lambda candidate: (
+            *_distance_priority(candidate, current_distance),
+            -candidate.power_percent,
+            candidate.risk_score,
         ),
     )[0]
 
@@ -249,15 +405,15 @@ def select_recommendation_candidate(
 ) -> PowerDistanceCandidate | None:
     """Choose the candidate that should represent the formula snapshot.
 
-    Stable hold is the most useful save/ML snapshot because it reflects the
-    recommended working point. If no stable pair exists, use the warm-up hint.
-    If neither safe pair exists, use the best available diagnostic pair so the
-    saved event still explains an underpowered/risky build.
+    Stable hold is the most useful diagnostic snapshot. If it is missing, use
+    practical warm-up, then minimum reaction, then the best available diagnostic
+    pair. Actual calibration observations remain the training truth.
     """
 
     return (
         recommendation.stable_hold
-        or recommendation.minimum_warmup
+        or recommendation.recommended_warmup
+        or recommendation.minimum_reaction
         or recommendation.best_available
     )
 
@@ -284,12 +440,23 @@ def build_power_distance_recommendation(
     modules: dict[str, ModuleConfig],
 ) -> PowerDistanceRecommendation:
     scan_input = build_recommendation_scan_input(calc_input)
-    candidates = scan_power_distance_grid(scan_input, heads=heads, modules=modules)
+    current_distance = float(scan_input.rock.distance)
+    min_scan_distance = max(1, int(round(current_distance)) - 20)
+    max_scan_distance = int(round(current_distance)) + 20
+    candidates = scan_power_distance_grid(
+        scan_input,
+        heads=heads,
+        modules=modules,
+        min_distance=min_scan_distance,
+        max_distance=max_scan_distance,
+    )
 
     if not candidates:
         return PowerDistanceRecommendation(
-            minimum_warmup=None,
+            minimum_reaction=None,
+            recommended_warmup=None,
             stable_hold=None,
+            upper_safe=None,
             scanned_count=0,
             note="No enabled beams; enable at least one beam to calculate recommendations.",
             best_available=None,
@@ -297,8 +464,19 @@ def build_power_distance_recommendation(
             required_multiplier=None,
         )
 
-    minimum = choose_minimum_warmup(candidates)
-    stable = choose_stable_hold(candidates)
+    minimum_reaction = choose_minimum_reaction(candidates, current_distance=current_distance)
+    recommended_warmup = choose_recommended_warmup(
+        candidates,
+        current_distance=current_distance,
+        minimum_reaction=minimum_reaction,
+    )
+    stable = choose_stable_hold(
+        candidates,
+        current_distance=current_distance,
+        recommended_warmup=recommended_warmup,
+        minimum_reaction=minimum_reaction,
+    )
+    upper_safe = choose_upper_safe(candidates, current_distance=current_distance)
     best_available = max(
         candidates,
         key=lambda candidate: (candidate.effective_power, candidate.margin, -candidate.distance),
@@ -312,21 +490,27 @@ def build_power_distance_recommendation(
             best_available.required_power / max(best_available.effective_power, 1.0),
             3,
         )
-    elif minimum is None and stable is None:
+    elif minimum_reaction is None and stable is None:
         limiting_reason = "enough_power_but_no_safe_pair"
-    elif minimum is None:
-        limiting_reason = "no_safe_warmup_pair"
+    elif minimum_reaction is None:
+        limiting_reason = "no_minimum_reaction_pair"
+    elif recommended_warmup is None:
+        limiting_reason = "no_recommended_warmup_pair"
     elif stable is None:
         limiting_reason = "no_stable_hold_pair"
 
     return PowerDistanceRecommendation(
-        minimum_warmup=minimum,
+        minimum_reaction=minimum_reaction,
+        recommended_warmup=recommended_warmup,
         stable_hold=stable,
+        upper_safe=upper_safe,
         scanned_count=len(candidates),
         note=(
-            "Heuristic helper: scans valid head range and 20-100% power using enabled "
-            "beam slots and selected active modules. It deliberately ignores placeholder "
-            "beam power values. Use as a starting hint, then calibrate with real outcomes."
+            "Heuristic helper: scans 20-100% power around the current scan distance "
+            "using enabled beam slots and selected active modules. It splits the old "
+            "warm-up hint into minimum reaction, practical warm-up, stable hold, and "
+            "upper safe. Minimum reaction may only warm slowly; use recommended warm-up "
+            "to build charge; stable hold may be slightly below first reaction because it is for maintaining an already-warmed rock."
         ),
         best_available=best_available,
         limiting_reason=limiting_reason,

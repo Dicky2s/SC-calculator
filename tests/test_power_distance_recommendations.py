@@ -120,3 +120,104 @@ def test_selected_recommendation_candidate_can_build_saved_formula_input():
     assert selected is not None
     assert saved_input.rock.distance == selected.distance
     assert saved_input.beams[0].power_percent == selected.power_percent
+
+
+def test_stable_hold_prefers_current_scan_distance_before_distant_safety_pair():
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
+
+    calc_input = CalculationInput(
+        rock=RockInput(mass=8735, resistance=0.0, instability=0.12, distance=15),
+        build=build,
+        beams=[BeamState(slot="main", power_percent=20)],
+    )
+
+    recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
+
+    assert recommendation.stable_hold is not None
+    assert abs(recommendation.stable_hold.distance - 15) <= 5
+
+
+def test_recommendation_splits_reaction_warmup_hold_and_upper_safe():
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
+
+    calc_input = CalculationInput(
+        rock=RockInput(mass=8735, resistance=0.0, instability=0.12, distance=15),
+        build=build,
+        beams=[BeamState(slot="main", power_percent=20)],
+    )
+
+    recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
+
+    assert recommendation.minimum_reaction is not None
+    assert recommendation.recommended_warmup is not None
+    assert recommendation.stable_hold is not None
+    assert recommendation.upper_safe is not None
+    assert recommendation.recommended_warmup.power_percent >= recommendation.minimum_reaction.power_percent + 1
+    assert recommendation.stable_hold.power_percent <= recommendation.minimum_reaction.power_percent
+    assert recommendation.stable_hold.power_percent <= recommendation.recommended_warmup.power_percent
+    assert recommendation.upper_safe.power_percent >= recommendation.recommended_warmup.power_percent
+
+
+def test_recommendation_dict_contains_new_and_legacy_warmup_keys():
+    from sc_mining.domain.recommendations import recommendation_to_dict
+
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_2x_rieger.yaml")
+    calc_input = CalculationInput(
+        rock=RockInput(mass=5245, resistance=0.39, instability=1.1216, distance=15),
+        build=build,
+        beams=[BeamState(slot="main", power_percent=20)],
+    )
+
+    recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
+    payload = recommendation_to_dict(recommendation)
+
+    assert "minimum_reaction" in payload
+    assert "recommended_warmup" in payload
+    assert "upper_safe" in payload
+    assert payload["minimum_warmup"] == payload["minimum_reaction"]
+
+
+def test_conservative_hold_can_be_below_first_reaction_for_field_calibration():
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_rieger_torrent_iii.yaml")
+
+    calc_input = CalculationInput(
+        rock=RockInput(mass=6528, resistance=0.21, instability=0.1286, distance=15),
+        build=build,
+        beams=[BeamState(slot="main", power_percent=20)],
+    )
+
+    recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
+
+    assert recommendation.minimum_reaction is not None
+    assert recommendation.recommended_warmup is not None
+    assert recommendation.stable_hold is not None
+    assert recommendation.minimum_reaction.power_percent <= 41
+    assert recommendation.recommended_warmup.power_percent <= recommendation.minimum_reaction.power_percent + 2
+    assert recommendation.stable_hold.power_percent <= recommendation.minimum_reaction.power_percent
+
+
+def test_resistance_model_does_not_overpush_resistant_rocks():
+    heads = load_heads("configs/heads.yaml")
+    modules = load_modules("configs/modules.yaml")
+    build = load_build("configs/builds/prospector_helix_rieger_torrent_iii.yaml")
+
+    calc_input = CalculationInput(
+        rock=RockInput(mass=7951, resistance=0.34, instability=3.6477, distance=15),
+        build=build,
+        beams=[BeamState(slot="main", power_percent=20)],
+    )
+
+    recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
+
+    assert recommendation.minimum_reaction is not None
+    assert recommendation.stable_hold is not None
+    assert recommendation.minimum_reaction.power_percent <= 56
+    assert recommendation.stable_hold.power_percent <= recommendation.minimum_reaction.power_percent

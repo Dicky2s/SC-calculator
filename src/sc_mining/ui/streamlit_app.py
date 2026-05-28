@@ -23,6 +23,7 @@ from sc_mining.domain.calibration_report import (
 )
 from sc_mining.domain.resource_math import aggregate_resources_by_name, build_resource_scu_preview_rows
 from sc_mining.domain.resource_prices import load_resource_price_config
+from sc_mining.domain.scan_parsing import describe_scan_mass_parse, parse_scan_mass_value
 from sc_mining.domain.config_loader import load_build, load_heads, load_modules, load_resources
 from sc_mining.dataset.exporter import build_dataset, export_dataset, get_dataset_export_summary
 from sc_mining.dataset.analytics import (
@@ -130,6 +131,15 @@ from sc_mining.storage.event_history import (
 CONFIG_DIR = Path("configs")
 RESOURCE_PRICES_PATH = CONFIG_DIR / "resource_prices.yaml"
 BUILDS_DIR = CONFIG_DIR / "builds"
+
+# Temporary UI whitelist: keep the sidebar focused on the two Prospector
+# builds that are being calibrated right now. Other YAML presets remain in
+# configs/builds for tests/history, but they are hidden from the main UI.
+VISIBLE_BUILD_PROFILE_FILENAMES = {
+    "prospector_helix_2x_rieger.yaml",
+    "prospector_helix_rieger_torrent_iii.yaml",
+}
+
 EVENTS_PATH = Path("data") / "sessions" / "manual_events.jsonl"
 DATASET_PATH = Path("data") / "datasets" / "mining_events.csv"
 SYNTHETIC_DATASET_PATH = Path("data") / "datasets" / "mining_events_synthetic.csv"
@@ -159,6 +169,20 @@ CALIBRATION_OBSERVATION_OPTIONS = {
     "overpowered": "Overpowered — too much / overshoot risk",
     "too_unstable": "Too unstable — jumps too much",
     "too_slow": "Too slow — technically works but too slow",
+    "warming_no_growth": "Warming but no growth — reacts but charge stalls",
+    "slow_growth": "Slow growth — works, but too slowly",
+    "stable_rising": "Stable still rising — hold power is too high",
+    "stable_dropping": "Stable dropping — hold power is too low",
+}
+
+CALIBRATION_BEHAVIOR_FLAG_OPTIONS = {
+    "warming_no_growth": "Warms, but charge does not grow",
+    "slow_growth": "Grows slowly",
+    "stable_still_rising": "Stable hold still rises",
+    "stable_dropping": "Stable hold drops",
+    "too_bright": "Too bright / uncomfortable",
+    "ocr_unsafe": "OCR unsafe / hard to read",
+    "uncomfortable": "Uncomfortable to control",
 }
 
 RESOURCE_OPTIONS = [
@@ -229,6 +253,15 @@ def resource_profile_rows(resource_profiles: dict) -> list[dict]:
 
 def list_build_files() -> list[Path]:
     return sorted(BUILDS_DIR.glob("*.yaml"))
+
+
+def list_visible_build_files() -> list[Path]:
+    visible_files = [
+        path
+        for path in list_build_files()
+        if path.name in VISIBLE_BUILD_PROFILE_FILENAMES
+    ]
+    return sorted(visible_files)
 
 
 
@@ -889,7 +922,7 @@ def render_calibration_form(
     st.markdown("### Step 6 — Formula error report / calibration")
     st.caption(
         "Optional: enable this when the formula/helper does not match the game. "
-        "The report keeps two formula rows and two actual in-game rows, split into warm-up and stable hold."
+        "The report keeps formula and actual rows split into warm-up/stable, plus quick behavior flags."
     )
 
     formula_issue_flag = st.checkbox(
@@ -902,6 +935,7 @@ def render_calibration_form(
     observed_min_warmup_power_percent = 0.0
     observed_stable_power_percent = 0.0
     calibration_comment = ""
+    behavior_flags: list[str] = []
     edited_observations = pd.DataFrame()
     actual_warmup_distance = 0.0
     actual_warmup_power_percent = 0.0
@@ -909,7 +943,7 @@ def render_calibration_form(
     actual_stable_power_percent = 0.0
 
     if formula_issue_flag:
-        formula_warmup = getattr(recommendation, "minimum_warmup", None)
+        formula_warmup = getattr(recommendation, "recommended_warmup", None) or getattr(recommendation, "minimum_warmup", None)
         formula_stable = getattr(recommendation, "stable_hold", None)
 
         st.write("Formula rows")
@@ -926,16 +960,16 @@ def render_calibration_form(
         st.write("Actual in-game rows")
         actual_col1, actual_col2 = st.columns(2)
         with actual_col1:
-            st.markdown("**Warm-up actual**")
+            st.markdown("**Minimum / warm-up actual**")
             actual_warmup_distance = st.number_input(
-                "Warm-up distance, m",
+                "Minimum/warm-up distance, m",
                 min_value=0.0,
                 value=0.0,
                 step=1.0,
                 key=f"{key_prefix}_actual_warmup_distance",
             )
             actual_warmup_power_percent = st.number_input(
-                "Warm-up power %",
+                "Minimum/warm-up power %",
                 min_value=0.0,
                 max_value=100.0,
                 value=0.0,
@@ -988,9 +1022,21 @@ def render_calibration_form(
         observed_min_warmup_power_percent = float(actual_warmup_power_percent or 0.0)
         observed_stable_power_percent = float(actual_stable_power_percent or 0.0)
 
+        behavior_flags = st.multiselect(
+            "What was wrong / uncomfortable?",
+            options=list(CALIBRATION_BEHAVIOR_FLAG_OPTIONS.keys()),
+            format_func=lambda flag: CALIBRATION_BEHAVIOR_FLAG_OPTIONS[flag],
+            key=f"{key_prefix}_calibration_behavior_flags",
+            help=(
+                "Quick labels for formula tuning. Example: if 46% reacts but charge does not climb, "
+                "select 'Warms, but charge does not grow'. If the suggested stable value still climbs, "
+                "select 'Stable hold still rises'."
+            ),
+        )
+
         calibration_comment = st.text_area(
             "Calibration comment",
-            placeholder="Example: formula gave warm-up 88% / stable 100%, actual warm-up 68% / stable 67% at 15m.",
+            placeholder="Example: formula overheats. Actual minimum is 38%, stable 37%; 43% still climbs.",
             height=80,
             key=f"{key_prefix}_calibration_comment",
         )
@@ -1105,9 +1151,16 @@ def render_calibration_form(
                 },
             )
 
+            behavior_flags = st.multiselect(
+                "Behavior flags",
+                options=list(CALIBRATION_BEHAVIOR_FLAG_OPTIONS.keys()),
+                format_func=lambda flag: CALIBRATION_BEHAVIOR_FLAG_OPTIONS[flag],
+                key=f"{key_prefix}_calibration_behavior_flags",
+            )
+
             calibration_comment = st.text_area(
                 "Calibration comment",
-                placeholder="Example: 20% at 15m did not warm up; stable hold around 81%.",
+                placeholder="Example: 46% reacts but does not climb; 49% grows slowly; 44% holds after green.",
                 height=80,
                 key=f"{key_prefix}_calibration_comment",
             )
@@ -1117,7 +1170,10 @@ def render_calibration_form(
         observations.extend(
             row
             for row in [
-                formula_candidate_to_observation(getattr(recommendation, "minimum_warmup", None), phase="warmup"),
+                formula_candidate_to_observation(
+                    getattr(recommendation, "recommended_warmup", None) or getattr(recommendation, "minimum_warmup", None),
+                    phase="warmup",
+                ),
                 formula_candidate_to_observation(getattr(recommendation, "stable_hold", None), phase="stable"),
                 actual_power_to_observation(
                     distance=_positive_or_none(actual_warmup_distance),
@@ -1146,6 +1202,7 @@ def render_calibration_form(
         ),
         observed_distance=observed_distance if observed_distance > 0 else None,
         comment=calibration_comment.strip(),
+        behavior_flags=list(behavior_flags),
         observations=observations,
     )
 
@@ -1176,9 +1233,13 @@ def render_power_distance_limit_hint(recommendation) -> None:
             f"Best raw-power pair: {best.distance:.0f}m / {best.power_percent:.0f}% "
             f"with margin {best.margin:.0f} and risk {best.risk_score:.3f}. Record the actual warm-up/stable result for calibration."
         )
-    elif recommendation.limiting_reason == "no_safe_warmup_pair":
+    elif recommendation.limiting_reason in {"no_safe_warmup_pair", "no_minimum_reaction_pair"}:
         st.warning(
-            "No warm-up pair passed the safety filter. There may be enough power, but the current model marks the available pairs as unstable/risky."
+            "No minimum reaction pair passed the safety filter. There may be enough power, but the current model marks the available pairs as unstable/risky."
+        )
+    elif recommendation.limiting_reason == "no_recommended_warmup_pair":
+        st.warning(
+            "Minimum reaction is possible, but no practical warm-up pair with extra charge margin was found. Record whether the rock warms but does not grow."
         )
     elif recommendation.limiting_reason == "no_stable_hold_pair":
         st.warning(
@@ -1189,9 +1250,9 @@ def render_power_distance_limit_hint(recommendation) -> None:
 def render_power_distance_helper(calc_input, heads, modules):
     st.subheader("Power / distance helper")
     st.caption(
-        "Formula-based hint for the selected rock/build. It scans 20-100% power around the current distance, "
-        "so a separate manual power slider is not needed. If the helper returns no pair, the diagnostic below "
-        "explains whether the build is underpowered or the pairs were rejected as risky."
+        "Formula-based hint for the selected rock/build. It scans 20-100% power around the current distance "
+        "and splits output into minimum reaction, conservative warm-up, stable hold, and upper safe. "
+        "If minimum reaction warms but does not climb, add 1-3% and record that as actual warm-up."
     )
 
     recommendation = build_power_distance_recommendation(calc_input, heads=heads, modules=modules)
@@ -1202,36 +1263,70 @@ def render_power_distance_helper(calc_input, heads, modules):
 
     render_power_distance_limit_hint(recommendation)
 
-    col1, col2 = st.columns(2)
+    def _render_candidate_card(title: str, candidate, empty_message: str, hint: str) -> None:
+        st.markdown(f"**{title}**")
+        st.caption(hint)
+        if candidate is None:
+            st.warning(empty_message)
+            return
+        st.metric("Scan distance, m", f"{candidate.distance:.0f} m")
+        st.metric("Power", f"{candidate.power_percent:.0f}%")
+        st.write(
+            f"margin={candidate.margin:.2f}, margin_ratio={candidate.margin_ratio:.3f}, "
+            f"risk={candidate.risk_score:.3f}, verdict={candidate.verdict}"
+        )
+
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.markdown("**Minimum warm-up / move-back hint**")
-        if recommendation.minimum_warmup is None:
-            st.warning("No safe warm-up pair found in scan range.")
-        else:
-            candidate = recommendation.minimum_warmup
-            st.metric("Scan distance, m", f"{candidate.distance:.0f} m")
-            st.metric("Power", f"{candidate.power_percent:.0f}%")
-            st.write(
-                f"margin={candidate.margin:.2f}, risk={candidate.risk_score:.3f}, verdict={candidate.verdict}"
-            )
+        _render_candidate_card(
+            "Minimum reaction",
+            recommendation.minimum_warmup,
+            "No minimum reaction pair found in scan range.",
+            "First % where the rock reacts. It may warm slowly or stall; do not treat it as the main charge-up value.",
+        )
 
     with col2:
-        st.markdown("**Recommended stable hold near current distance**")
-        if recommendation.stable_hold is None:
-            st.warning("No stable hold pair found near the current distance.")
+        _render_candidate_card(
+            "Recommended warm-up",
+            getattr(recommendation, "recommended_warmup", None),
+            "No practical warm-up pair found in scan range.",
+            "Use this to build charge. It now adds only a small margin above minimum reaction to avoid overheating.",
+        )
+
+    with col3:
+        _render_candidate_card(
+            "Stable hold",
+            recommendation.stable_hold,
+            "No stable hold pair found near the current distance.",
+            "Use after entering/approaching the green zone. It can be slightly below minimum reaction because the rock is already warm.",
+        )
+
+    with col4:
+        _render_candidate_card(
+            "Upper safe",
+            getattr(recommendation, "upper_safe", None),
+            "No upper safe pair found in scan range.",
+            "Approximate upper comfort boundary. Above this, overshoot/risk becomes more likely.",
+        )
+
+    if recommendation.recommended_warmup and recommendation.stable_hold:
+        if recommendation.stable_hold.power_percent > recommendation.recommended_warmup.power_percent:
+            st.warning(
+                "Stable hold is above recommended warm-up. Treat this as a formula issue and record actual stable power."
+            )
         else:
-            candidate = recommendation.stable_hold
-            st.metric("Scan distance, m", f"{candidate.distance:.0f} m")
-            st.metric("Power", f"{candidate.power_percent:.0f}%")
-            st.write(
-                f"margin={candidate.margin:.2f}, margin_ratio={candidate.margin_ratio:.3f}, risk={candidate.risk_score:.3f}"
+            st.caption(
+                "Suggested flow: start from Minimum reaction or Recommended warm-up, then drop toward Stable hold after charge starts moving. "
+                "If minimum reaction warms but does not climb, add 1-3% and save that as actual warm-up."
             )
 
     with st.expander("Recommendation details", expanded=False):
         st.json({
-            "minimum_warmup": recommendation.minimum_warmup.__dict__ if recommendation.minimum_warmup else None,
+            "minimum_reaction": recommendation.minimum_warmup.__dict__ if recommendation.minimum_warmup else None,
+            "recommended_warmup": recommendation.recommended_warmup.__dict__ if recommendation.recommended_warmup else None,
             "stable_hold": recommendation.stable_hold.__dict__ if recommendation.stable_hold else None,
+            "upper_safe": recommendation.upper_safe.__dict__ if recommendation.upper_safe else None,
             "best_available": recommendation.best_available.__dict__ if recommendation.best_available else None,
             "limiting_reason": recommendation.limiting_reason,
             "required_multiplier": recommendation.required_multiplier,
@@ -2818,13 +2913,30 @@ def render_calculator_tab(
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        mass = st.number_input(
+        mass_raw = st.text_input(
             "Mass",
-            min_value=1.0,
-            value=12600.0,
-            step=100.0,
+            value="12600",
             key=f"{key_prefix}_mass",
+            help=(
+                "Use the scan Mass value. Thousands separators are supported: "
+                "4.666 / 4,666 / 23.295 / 23,295 are parsed as 4666 / 23295. "
+                "Percent fields are parsed separately below."
+            ),
         )
+        try:
+            mass = parse_scan_mass_value(mass_raw)
+        except ValueError as exc:
+            st.error(f"Invalid mass value: {exc}")
+            st.stop()
+
+        mass_parse_note = describe_scan_mass_parse(mass_raw, mass)
+        if mass_parse_note:
+            st.caption(mass_parse_note)
+        if mass < 100.0:
+            st.warning(
+                "Mass is below 100. This row will be treated as suspicious for ML/training; "
+                "check whether the value should be thousands-formatted."
+            )
 
     with col2:
         resistance_percent = st.number_input(
@@ -2937,7 +3049,9 @@ def render_calculator_tab(
         candidate_kind = (
             "stable hold"
             if selected_candidate == power_distance_recommendation.stable_hold
-            else "minimum warm-up"
+            else "recommended warm-up"
+            if selected_candidate == getattr(power_distance_recommendation, "recommended_warmup", None)
+            else "minimum reaction"
             if selected_candidate == power_distance_recommendation.minimum_warmup
             else "best available diagnostic pair"
         )
@@ -3519,9 +3633,9 @@ def main() -> None:
     modules = load_modules(CONFIG_DIR / "modules.yaml")
     resource_profiles = load_resources(RESOURCES_CONFIG)
 
-    build_files = list_build_files()
+    build_files = list_visible_build_files()
     if not build_files:
-        st.error("No build YAML files found in configs/builds")
+        st.error("No visible build YAML files found. Check VISIBLE_BUILD_PROFILE_FILENAMES in streamlit_app.py.")
         return
 
     build_by_path = {path: load_build(path) for path in build_files}
@@ -3536,10 +3650,30 @@ def main() -> None:
     run_context = render_run_context_sidebar()
 
     ship_types = sorted({build.ship_type for build in build_by_path.values()})
+    # Sidebar selection state is versioned because Streamlit preserves widget
+    # state very aggressively across reruns. The current UI exposes only two
+    # visible Prospector presets, so use a fresh v5 namespace and purge stale
+    # v4/v3 keys that could still hold hidden Golem/MOLE values in the browser
+    # session.
+    sidebar_state_version = "v5_visible_prospector"
+    legacy_sidebar_state_keys = [
+        key
+        for key in st.session_state.keys()
+        if key == "selected_ship_type"
+        or key == "selected_build_profile_path"
+        or key.startswith("selected_ship_type__") and sidebar_state_version not in key
+        or key.startswith("selected_build_profile_path__") and sidebar_state_version not in key
+        or key.startswith("selected_build_profile_index__")
+        or key.startswith("selected_build_profile_widget__") and sidebar_state_version not in key
+        or key.startswith("selected_build_module_filter__") and sidebar_state_version not in key
+    ]
+    for key in legacy_sidebar_state_keys:
+        del st.session_state[key]
+
     selected_ship = st.sidebar.selectbox(
         "Ship",
         ship_types,
-        key="selected_ship_type",
+        key=f"selected_ship_type__{sidebar_state_version}",
     )
 
     ship_build_files = [
@@ -3559,7 +3693,7 @@ def main() -> None:
     selected_module_ids = st.sidebar.multiselect(
         "Filter by modules",
         ship_module_ids,
-        key=f"selected_build_module_filter__{selected_ship}",
+        key=f"selected_build_module_filter__{sidebar_state_version}__{selected_ship}",
         format_func=lambda module_id: module_display_name(module_id, modules),
         help="Optional filter for the build list. A build must contain every selected module.",
     )
@@ -3574,60 +3708,56 @@ def main() -> None:
         filtered_build_files = ship_build_files
 
     filtered_build_options = [str(path) for path in filtered_build_files]
-    st.sidebar.caption(f"Matching build profiles: {len(filtered_build_options)}")
+    st.sidebar.caption(f"Visible build profiles: {len(filtered_build_options)}")
+    st.sidebar.caption("Temporarily hidden presets: all except 2× Rieger-C3 and Rieger-C3 + Torrent III.")
 
-    selected_build_state_key = "selected_build_profile_path"
-    selected_ship_build_state_key = f"selected_build_profile_path__{selected_ship}"
+    selected_build_state_key = f"selected_build_profile_path__{sidebar_state_version}"
+    selected_ship_build_state_key = (
+        f"selected_build_profile_path__{sidebar_state_version}__{selected_ship}"
+    )
     module_filter_token = build_module_filter_token(selected_module_ids)
-    selected_build_index_key = (
-        f"selected_build_profile_index__{selected_ship}__{module_filter_token}"
+    selected_build_widget_key = (
+        f"selected_build_profile_widget__{sidebar_state_version}__{selected_ship}__{module_filter_token}"
     )
 
-    # Use an integer index as the widget value instead of the build path itself.
-    # Streamlit can preserve a stale string value for a selectbox across reruns,
-    # which can leave a Golem path visible while Ship says Prospector. An index
-    # can only point into the current ship/filter option list, so stale paths from
-    # another ship are structurally impossible.
+    # Store the selected build as one of the already-filtered path strings under
+    # a ship/version-scoped widget key. This makes the widget itself a single
+    # source of truth: the options list contains only builds for selected_ship,
+    # so a Golem build cannot be selected while Ship is Prospector. The separate
+    # per-ship key only remembers the last valid choice for Refresh/rerun.
     remembered_build = st.session_state.get(selected_ship_build_state_key)
     if remembered_build not in filtered_build_options:
         remembered_build = filtered_build_options[0]
     default_build_index = filtered_build_options.index(remembered_build)
 
-    current_index = st.session_state.get(selected_build_index_key)
-    if not isinstance(current_index, int) or current_index < 0 or current_index >= len(filtered_build_options):
-        st.session_state[selected_build_index_key] = default_build_index
-
-    def _format_build_index(index: int) -> str:
-        try:
-            path_text = filtered_build_options[index]
-        except (IndexError, TypeError):
-            path_text = filtered_build_options[0]
+    def _format_build_path(path_text: str) -> str:
         return build_profile_label(
             build_by_path[Path(path_text)],
             heads,
             modules,
         )
 
-    selected_build_index = st.sidebar.selectbox(
+    selected_build_path = st.sidebar.selectbox(
         "Build profile",
-        list(range(len(filtered_build_options))),
-        index=st.session_state[selected_build_index_key],
-        key=selected_build_index_key,
-        format_func=_format_build_index,
-        help="Readable loadout label. The widget stores only an index into the currently filtered build list, so a profile from another ship cannot survive refresh/rerun.",
+        filtered_build_options,
+        index=default_build_index,
+        key=selected_build_widget_key,
+        format_func=_format_build_path,
+        help="Readable loadout label. The option list is rebuilt from the selected ship, so a profile from another ship cannot survive refresh/rerun.",
     )
-
-    selected_build_path = filtered_build_options[selected_build_index]
     selected_build = build_by_path[Path(selected_build_path)]
 
     # Hard invariant: the selected build must belong to the selected ship. If this
     # ever trips, recover immediately instead of rendering a mixed ship/build UI.
     if selected_build.ship_type != selected_ship:
-        selected_build_index = 0
-        st.session_state[selected_build_index_key] = selected_build_index
-        selected_build_path = filtered_build_options[selected_build_index]
+        stale_build_path = selected_build_path
+        selected_build_path = filtered_build_options[0]
         selected_build = build_by_path[Path(selected_build_path)]
-        st.sidebar.warning("Recovered a stale build selection from another ship.")
+        st.session_state[selected_build_widget_key] = selected_build_path
+        st.sidebar.warning(
+            f"Recovered stale build selection: {Path(stale_build_path).name} does not belong to {selected_ship}."
+        )
+        st.rerun()
 
     st.session_state[selected_build_state_key] = selected_build_path
     st.session_state[selected_ship_build_state_key] = selected_build_path

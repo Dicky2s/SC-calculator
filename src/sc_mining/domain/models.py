@@ -23,6 +23,10 @@ PowerObservationLabel = Literal[
     "overpowered",
     "too_unstable",
     "too_slow",
+    "warming_no_growth",
+    "slow_growth",
+    "stable_rising",
+    "stable_dropping",
 ]
 
 PowerObservationSource = Literal[
@@ -227,6 +231,7 @@ class CalibrationFeedback(BaseModel):
     observed_stable_power_percent: float | None = Field(default=None, ge=20, le=100)
     observed_distance: float | None = Field(default=None, gt=0)
     comment: str = ""
+    behavior_flags: list[str] = Field(default_factory=list)
     observations: list[PowerDistanceObservation] = Field(default_factory=list)
 
 
